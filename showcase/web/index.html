@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vidcut 编辑器</title>
+<style>
+:root {
+  --bg: #f6f6f4; --panel: #fff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dd;
+  --accent: #2f6fde; --accent-text: #fff; --danger: #c0392b; --ok: #2e8b57;
+  --gap: #2b2b2b; --playing: #fff4d6; --selected: #e8f0ff;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #161615; --panel: #1f1f1e; --text: #ecece8; --muted: #9a9a94; --line: #33332f;
+    --accent: #5b8ff0; --playing: #3a3320; --selected: #1f2c44; --gap: #000; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+header { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+header input#name { font-size: 16px; font-weight: 600; border: 1px solid transparent; background: transparent;
+  color: var(--text); padding: 4px 6px; border-radius: 6px; min-width: 0; width: 220px; }
+header input#name:hover, header input#name:focus { border-color: var(--line); }
+.spacer { flex: 1; }
+.muted { color: var(--muted); }
+button { font: inherit; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--text); cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+button.icon { padding: 2px 7px; }
+#saveState.dirty { color: var(--danger); }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 16px; padding: 16px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } aside { order: -1; } }
+ol#items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px;
+  display: grid; grid-template-columns: 22px 120px minmax(0, 1fr); gap: 10px; align-items: start; }
+.card.selected { background: var(--selected); border-color: var(--accent); }
+.card.playing { background: var(--playing); }
+.card.drop-before { box-shadow: 0 -3px 0 var(--accent); }
+.card.drop-after { box-shadow: 0 3px 0 var(--accent); }
+.handle { cursor: grab; color: var(--muted); user-select: none; text-align: center; padding-top: 4px; }
+.card img { width: 120px; aspect-ratio: 16/9; object-fit: contain; background: #000; border-radius: 6px; display: block; }
+.card.gap { grid-template-columns: 22px 120px minmax(0, 1fr); }
+.gapthumb { width: 120px; aspect-ratio: 16/9; background: var(--gap); border-radius: 6px; color: #888;
+  display: flex; align-items: center; justify-content: center; font-size: 12px; }
+.title { font-weight: 600; }
+.meta { font-size: 12px; color: var(--muted); }
+.summary { font-size: 13px; margin: 2px 0 6px; }
+.fields { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 12px; color: var(--muted); }
+.fields label { display: inline-flex; gap: 4px; align-items: center; }
+.fields input { width: 64px; font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 5px; padding: 2px 4px; }
+.fields input.bad { border-color: var(--danger); }
+.actions { display: flex; gap: 4px; margin-left: auto; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+aside { position: sticky; top: 64px; align-self: start; display: flex; flex-direction: column; gap: 4px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.player { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; }
+.player video { width: 100%; height: 100%; object-fit: contain; display: block; }
+#cover { position: absolute; inset: 0; background: #000; color: #777; display: none;
+  align-items: center; justify-content: center; font-size: 13px; pointer-events: none; }
+#nowInfo { font-size: 12px; color: var(--muted); min-height: 18px; margin-top: 6px; }
+h3 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 18px 0 6px; }
+#excluded { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+#excluded li { display: flex; gap: 8px; align-items: center; font-size: 13px; background: var(--panel);
+  border: 1px dashed var(--line); border-radius: 8px; padding: 6px 10px; }
+#excluded img { width: 64px; aspect-ratio: 16/9; object-fit: contain; background: #000; border-radius: 4px; }
+pre#renderLog { font-size: 11px; max-height: 140px; overflow: auto; background: var(--bg); padding: 6px;
+  border-radius: 6px; margin: 6px 0 0; white-space: pre-wrap; display: none; }
+#errors { color: var(--danger); font-size: 13px; white-space: pre-line; }
+select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; }
+kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+</style>
+</head>
+<body>
+<header>
+  <input id="name" aria-label="项目名">
+  <span id="total" class="muted"></span>
+  <span class="spacer"></span>
+  <button id="undo" title="Cmd/Ctrl+Z">撤销</button>
+  <button id="redo" title="Cmd/Ctrl+Shift+Z">重做</button>
+  <span id="saveState" class="muted"></span>
+  <button id="save" class="primary" title="Cmd/Ctrl+S">保存</button>
+</header>
+<main>
+  <section>
+    <div id="errors"></div>
+    <ol id="items"></ol>
+    <div class="row"><button id="addGap">+ 插入间隔</button>
+      <span class="muted" style="font-size:12px">拖动 ⋮⋮ 调整顺序；点击卡片在右侧预览，可用“设为入点/出点”精确裁剪</span></div>
+    <h3>已排除</h3>
+    <ul id="excluded"></ul>
+  </section>
+  <aside>
+    <div class="panel">
+      <div class="player"><video id="video" playsinline controls preload="metadata"></video><div id="cover">间隔</div></div>
+      <div id="nowInfo"></div>
+      <div class="row">
+        <button id="playAll" class="primary">▶ 预览整条</button>
+        <button id="stop">■ 停止</button>
+        <span class="spacer"></span>
+        <button id="setIn" disabled>设为入点</button>
+        <button id="setOut" disabled>设为出点</button>
+      </div>
+      <div class="muted" style="font-size:12px">浏览器内实时预览：按顺序播放代理文件，应用裁剪、音量和淡入淡出（竖屏模糊背景只在渲染时生成）。</div>
+    </div>
+    <div class="panel">
+      <div class="row" style="margin-top:0">
+        <label class="muted">竖屏
+          <select id="portrait"><option value="blur_fill">模糊背景</option><option value="pad">黑边</option></select></label>
+        <span class="spacer"></span>
+        <button id="renderDraft">出草稿</button>
+        <button id="renderFinal">出 1080p 成片</button>
+      </div>
+      <pre id="renderLog"></pre>
+      <div id="renderOut" class="row"></div>
+    </div>
+  </aside>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const video = $('#video');
+let S = null;            // 服务器返回的媒体信息
+let P = null;            // 正在编辑的 project.json
+let saved = '';          // 上次保存的内容，用来判断是否有改动
+let undoStack = [], redoStack = [];
+let selectedId = null;
+
+const items = () => P.tracks[0].items;
+const sec = (ms) => (ms / 1000).toFixed(1);
+const fmtDur = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const proxyUrl = (mid) => `/media/${mid}/proxy.mp4`;
+const newId = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+
+function h(tag, attrs = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'class') el.className = v;
+    else if (v !== false && v != null) el.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of children.flat()) if (c != null) el.append(c);
+  return el;
+}
+
+// ───────── 状态与撤销 ─────────
+async function load() {
+  S = await (await fetch('/api/state')).json();
+  P = S.project;
+  P.excluded = P.excluded || [];
+  saved = JSON.stringify(P);
+  render();
+  if (S.render.status === 'running') pollRender();
+  else if (S.render.output) showOutput(S.render);
+}
+
+function mutate(fn) {
+  undoStack.push(JSON.stringify(P));
+  redoStack = [];
+  fn();
+  render();
+}
+function undo() { if (undoStack.length) { redoStack.push(JSON.stringify(P)); P = JSON.parse(undoStack.pop()); render(); } }
+function redo() { if (redoStack.length) { undoStack.push(JSON.stringify(P)); P = JSON.parse(redoStack.pop()); render(); } }
+const dirty = () => JSON.stringify(P) !== saved;
+
+async function save() {
+  $('#errors').textContent = '';
+  const r = await fetch('/api/project', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(P) });
+  const data = await r.json();
+  if (!r.ok) { $('#errors').textContent = '保存失败：\n' + (data.errors || [data.error]).join('\n'); return false; }
+  saved = JSON.stringify(P);
+  $('#saveState').dataset.at = data.saved_at.slice(11);
+  render();
+  return true;
+}
+
+// ───────── 时间线渲染 ─────────
+function render() {
+  $('#name').value = P.project.name;
+  $('#portrait').value = P.project.portrait_mode;
+  const ol = $('#items');
+  ol.replaceChildren(...items().map((it, i) => it.type === 'clip' ? clipCard(it, i) : gapCard(it, i)));
+  $('#excluded').replaceChildren(...P.excluded.map(excludedRow));
+  if (!P.excluded.length) $('#excluded').append(h('li', { class: 'muted' }, '（无）'));
+  const total = items().reduce((t, it) => t + (it.type === 'clip' ? it.out_ms - it.in_ms : it.duration_ms), 0);
+  $('#total').textContent = `${items().filter((i) => i.type === 'clip').length} 段 · ${fmtDur(total)}`;
+  const st = $('#saveState');
+  st.className = dirty() ? 'dirty' : 'muted';
+  st.textContent = dirty() ? '● 未保存' : (st.dataset.at ? `已保存 ${st.dataset.at}` : '已保存');
+  $('#undo').disabled = !undoStack.length;
+  $('#redo').disabled = !redoStack.length;
+  updateMarkButtons();
+  markPlaying();
+}
+
+function numField(label, value, onSet, opts = {}) {
+  const input = h('input', { type: 'number', step: opts.step || '0.1', value, min: opts.min, max: opts.max, 'aria-label': label });
+  input.addEventListener('change', () => {
+    const v = parseFloat(input.value);
+    if (Number.isNaN(v)) { input.classList.add('bad'); return; }
+    mutate(() => onSet(v));
+  });
+  input.addEventListener('click', (e) => e.stopPropagation());
+  return h('label', {}, label, input, opts.unit || '');
+}
+
+function moveBtns(i) {
+  return [
+    h('button', { class: 'icon', title: '上移', disabled: i === 0, onclick: (e) => { e.stopPropagation(); move(i, i - 1); } }, '↑'),
+    h('button', { class: 'icon', title: '下移', disabled: i === items().length - 1, onclick: (e) => { e.stopPropagation(); move(i, i + 1); } }, '↓'),
+  ];
+}
+
+function clipCard(it, i) {
+  const m = S.media[it.media_id] || {};
+  const ai = it.ai || {};
+  const len = it.out_ms - it.in_ms;
+  const bad = !(0 <= it.in_ms && it.in_ms < it.out_ms && it.out_ms <= m.duration_ms);
+  const card = h('li', { class: 'card clip' + (it.id === selectedId ? ' selected' : ''), 'data-id': it.id, 'data-idx': i },
+    h('div', { class: 'handle', draggable: 'true', title: '拖动排序' }, '⋮⋮'),
+    h('img', { src: `/media/${it.media_id}/thumb.jpg`, alt: '', loading: 'lazy' }),
+    h('div', {},
+      h('div', { class: 'title' }, ai.title || it.name),
+      h('div', { class: 'meta' }, `${it.name} · ${it.group || ''} · 原长 ${sec(m.duration_ms)}s${m.portrait ? ' · 竖屏' : ''}`),
+      ai.summary ? h('div', { class: 'summary' }, ai.summary) : null,
+      h('div', { class: 'fields' },
+        numField('入点', sec(it.in_ms), (v) => { it.in_ms = clamp(Math.round(v * 1000), 0, it.out_ms - 200); }, { unit: 's', min: 0 }),
+        numField('出点', sec(it.out_ms), (v) => { it.out_ms = clamp(Math.round(v * 1000), it.in_ms + 200, m.duration_ms); }, { unit: 's', min: 0 }),
+        h('span', { class: bad ? 'bad' : '' }, `= ${sec(len)}s`),
+        numField('音量', it.volume_db ?? 0, (v) => { it.volume_db = clamp(Math.round(v), -30, 30); }, { unit: 'dB', step: '1', min: -30, max: 30 }),
+        numField('淡入', sec(it.fade_in_ms || 0), (v) => { it.fade_in_ms = clamp(Math.round(v * 1000), 0, len - (it.fade_out_ms || 0)); }, { unit: 's', min: 0 }),
+        numField('淡出', sec(it.fade_out_ms || 0), (v) => { it.fade_out_ms = clamp(Math.round(v * 1000), 0, len - (it.fade_in_ms || 0)); }, { unit: 's', min: 0 }),
+        h('span', { class: 'actions' },
+          ...moveBtns(i),
+          h('button', { class: 'icon', title: '预览这一段', onclick: (e) => { e.stopPropagation(); select(it.id, true); } }, '▶'),
+          h('button', { class: 'icon', title: '排除这一段', onclick: (e) => { e.stopPropagation(); excludeClip(i); } }, '✕'),
+        ),
+      ),
+    ),
+  );
+  card.addEventListener('click', () => select(it.id, false));
+  addDrag(card, i);
+  return card;
+}
+
+function gapCard(it, i) {
+  const card = h('li', { class: 'card gap' + (it.id === selectedId ? ' selected' : ''), 'data-id': it.id, 'data-idx': i },
+    h('div', { class: 'handle', draggable: 'true', title: '拖动排序' }, '⋮⋮'),
+    h('div', { class: 'gapthumb' }, '黑场'),
+    h('div', {},
+      h('div', { class: 'title' }, '间隔'),
+      h('div', { class: 'fields' },
+        numField('时长', sec(it.duration_ms), (v) => { it.duration_ms = clamp(Math.round(v * 1000), 100, 60000); }, { unit: 's', min: 0.1 }),
+        h('span', { class: 'actions' },
+          ...moveBtns(i),
+          h('button', { class: 'icon', title: '删除间隔', onclick: (e) => { e.stopPropagation(); mutate(() => items().splice(i, 1)); } }, '✕'),
+        ),
+      ),
+    ),
+  );
+  card.addEventListener('click', () => { selectedId = it.id; render(); });
+  addDrag(card, i);
+  return card;
+}
+
+function excludedRow(e) {
+  return h('li', {},
+    h('img', { src: `/media/${e.media_id}/thumb.jpg`, alt: '' }),
+    h('span', {}, h('b', {}, e.name), ' ', h('span', { class: 'muted' }, e.reason || '')),
+    h('span', { class: 'spacer' }),
+    h('button', { onclick: () => restoreClip(e) }, '加回'),
+  );
+}
+
+const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+
+function move(from, to) {
+  if (to < 0 || to >= items().length || from === to) return;
+  mutate(() => { const [x] = items().splice(from, 1); items().splice(to, 0, x); });
+}
+
+function excludeClip(i) {
+  mutate(() => {
+    const [it] = items().splice(i, 1);
+    P.excluded.push({ media_id: it.media_id, name: it.name, reason: '手动排除' });
+    if (selectedId === it.id) selectedId = null;
+  });
+}
+
+function restoreClip(e) {
+  const m = S.media[e.media_id];
+  const s = m.summary || {};
+  const ok = Number.isInteger(s.in_ms) && s.out_ms > s.in_ms && s.out_ms - s.in_ms >= 200;
+  const clip = {
+    id: newId('c'), type: 'clip', media_id: e.media_id, name: m.name,
+    in_ms: ok ? s.in_ms : 0, out_ms: ok ? s.out_ms : m.duration_ms,
+    volume_db: 0, fade_in_ms: 0, fade_out_ms: 0, group: '',
+    ai: { title: s.title, summary: s.summary, keywords: s.keywords || [], reason: s.reason, source: s.source },
+  };
+  mutate(() => {
+    P.excluded = P.excluded.filter((x) => x !== e && x.media_id !== e.media_id);
+    // 按拍摄时间插回合适的位置
+    const idx = items().findIndex((it) => it.type === 'clip' && S.media[it.media_id]?.created > m.created);
+    items().splice(idx < 0 ? items().length : idx, 0, clip);
+    selectedId = clip.id;
+  });
+}
+
+function addGap() {
+  const i = items().findIndex((it) => it.id === selectedId);
+  mutate(() => items().splice(i < 0 ? items().length : i + 1, 0,
+    { id: newId('g'), type: 'gap', duration_ms: 1000, background: 'black' }));
+}
+
+// ───────── 拖动排序 ─────────
+let dragFrom = null;
+function addDrag(card, i) {
+  const handle = card.querySelector('.handle');
+  handle.addEventListener('dragstart', (e) => { dragFrom = i; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setDragImage(card, 20, 20); });
+  handle.addEventListener('dragend', () => { dragFrom = null; clearDrop(); });
+  card.addEventListener('dragover', (e) => {
+    if (dragFrom === null) return;
+    e.preventDefault();
+    clearDrop();
+    const r = card.getBoundingClientRect();
+    card.classList.add(e.clientY < r.top + r.height / 2 ? 'drop-before' : 'drop-after');
+  });
+  card.addEventListener('drop', (e) => {
+    e.preventDefault();
+    if (dragFrom === null) return;
+    const after = card.classList.contains('drop-after');
+    let to = i + (after ? 1 : 0);
+    if (dragFrom < to) to -= 1;
+    const from = dragFrom;
+    dragFrom = null;
+    clearDrop();
+    move(from, to);
+  });
+}
+const clearDrop = () => document.querySelectorAll('.drop-before, .drop-after').forEach((c) => c.classList.remove('drop-before', 'drop-after'));
+
+// ───────── 预览播放器 ─────────
+// mode: idle | clip（单段预览）| all（整条预览）| output（看渲染结果）
+let mode = 'idle', playIdx = -1, current = null, gapTimer = null, lastT = 0;
+let audioCtx = null, gainNode = null;
+
+function ensureAudio() {
+  if (audioCtx) { audioCtx.resume(); return; }
+  try {
+    audioCtx = new AudioContext();
+    gainNode = audioCtx.createGain();
+    audioCtx.createMediaElementSource(video).connect(gainNode).connect(audioCtx.destination);
+  } catch (e) { audioCtx = null; }  // 不支持时退回到 video.volume（只能减小音量）
+}
+const dbToGain = (db) => Math.pow(10, (db || 0) / 20);
+function setGain(g) {
+  if (gainNode) gainNode.gain.value = g;
+  else video.volume = Math.min(1, g);
+}
+
+function loadMedia(url) {
+  return new Promise((resolve) => {
+    if (video.getAttribute('src') === url && video.readyState >= 1) return resolve();
+    video.addEventListener('loadedmetadata', () => resolve(), { once: true });
+    video.src = url;
+  });
+}
+function seek(t) {
+  return new Promise((resolve) => {
+    if (Math.abs(video.currentTime - t) < 0.01) return resolve();
+    video.addEventListener('seeked', () => resolve(), { once: true });
+    video.currentTime = t;
+  });
+}
+
+async function showClip(it, autoplay) {
+  current = it;
+  $('#cover').style.display = 'none';
+  await loadMedia(proxyUrl(it.media_id));
+  await seek(it.in_ms / 1000);
+  lastT = video.currentTime * 1000;
+  applyFade();
+  if (autoplay) { ensureAudio(); await video.play().catch(() => {}); }
+  updateNow();
+}
+
+function select(id, autoplay) {
+  stop();
+  selectedId = id;
+  const it = items().find((x) => x.id === id);
+  render();
+  if (it?.type === 'clip') { mode = 'clip'; showClip(it, autoplay); }
+}
+
+async function playAll() {
+  stop();
+  ensureAudio();
+  mode = 'all';
+  playAt(0);
+}
+async function playAt(i) {
+  if (mode !== 'all') return;
+  playIdx = i;
+  const it = items()[i];
+  markPlaying();
+  if (!it) return stop();
+  if (it.type === 'gap') {
+    current = it;
+    video.pause();
+    $('#cover').style.display = 'flex';
+    updateNow();
+    gapTimer = setTimeout(() => playAt(i + 1), it.duration_ms);
+  } else {
+    await showClip(it, true);
+  }
+}
+
+function stop() {
+  clearTimeout(gapTimer);
+  mode = mode === 'output' ? 'output' : 'idle';
+  playIdx = -1;
+  video.pause();
+  video.style.opacity = 1;
+  $('#cover').style.display = 'none';
+  setGain(1);
+  markPlaying();
+}
+
+function applyFade() {
+  if (!current || current.type !== 'clip' || mode === 'output') { video.style.opacity = 1; return; }
+  const t = video.currentTime * 1000 - current.in_ms;
+  const len = current.out_ms - current.in_ms;
+  let f = 1;
+  if (current.fade_in_ms) f = Math.min(f, t / current.fade_in_ms);
+  if (current.fade_out_ms) f = Math.min(f, (len - t) / current.fade_out_ms);
+  f = clamp(f, 0, 1);
+  // 只在入出点范围内应用效果，拖到范围外时按原样显示，方便找新的入出点
+  if (t < 0 || t > len) f = 1;
+  video.style.opacity = f;
+  setGain(dbToGain(current.volume_db) * f);
+}
+
+function tick() {
+  if ((mode === 'clip' || mode === 'all') && current?.type === 'clip' && !video.paused) {
+    const t = video.currentTime * 1000;
+    applyFade();
+    if (lastT < current.out_ms && t >= current.out_ms) {
+      if (mode === 'all') playAt(playIdx + 1);
+      else video.pause();
+    }
+    lastT = t;
+  } else if (current?.type === 'clip') {
+    lastT = video.currentTime * 1000;
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+// 出点等于原片结尾时，视频会先触发 ended 并暂停，走不到 tick 里的出点判断
+video.addEventListener('ended', () => {
+  if (mode === 'all' && current?.type === 'clip') playAt(playIdx + 1);
+});
+video.addEventListener('seeked', () => { lastT = video.currentTime * 1000; applyFade(); updateNow(); });
+video.addEventListener('timeupdate', updateNow);
+video.addEventListener('play', ensureAudio);
+
+function markPlaying() {
+  document.querySelectorAll('.card').forEach((c) => c.classList.toggle('playing', mode === 'all' && +c.dataset.idx === playIdx));
+}
+
+function updateNow() {
+  const el = $('#nowInfo');
+  if (mode === 'output') { el.textContent = '正在查看渲染结果'; return; }
+  if (!current) { el.textContent = '点击左侧片段预览'; return; }
+  if (current.type === 'gap') { el.textContent = `间隔 ${sec(current.duration_ms)}s`; return; }
+  el.textContent = `${current.name}  当前 ${video.currentTime.toFixed(2)}s  ·  入点 ${sec(current.in_ms)}s  出点 ${sec(current.out_ms)}s`;
+  updateMarkButtons();
+}
+
+function selectedClip() {
+  const it = items().find((x) => x.id === selectedId);
+  return it?.type === 'clip' && mode !== 'output' && video.getAttribute('src') === proxyUrl(it.media_id) ? it : null;
+}
+function updateMarkButtons() {
+  const it = selectedClip();
+  $('#setIn').disabled = !it;
+  $('#setOut').disabled = !it;
+}
+function setMark(which) {
+  const it = selectedClip();
+  if (!it) return;
+  const t = Math.round(video.currentTime * 1000);
+  mutate(() => {
+    if (which === 'in') it.in_ms = clamp(t, 0, it.out_ms - 200);
+    else it.out_ms = clamp(t, it.in_ms + 200, S.media[it.media_id].duration_ms);
+  });
+  current = it;
+}
+
+// ───────── 渲染 ─────────
+async function startRender(draft) {
+  if (dirty() && !(await save())) return;
+  const r = await fetch('/api/render', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ draft }) });
+  if (!r.ok) { $('#errors').textContent = (await r.json()).error; return; }
+  pollRender();
+}
+async function pollRender() {
+  const r = await (await fetch('/api/render')).json();
+  const log = $('#renderLog');
+  log.style.display = 'block';
+  log.textContent = r.log.slice(-12).join('\n') || '开始渲染…';
+  log.scrollTop = log.scrollHeight;
+  $('#renderDraft').disabled = $('#renderFinal').disabled = r.status === 'running';
+  if (r.status === 'running') { $('#renderOut').textContent = '渲染中…'; setTimeout(pollRender, 1000); return; }
+  if (r.status === 'failed') { $('#renderOut').textContent = '渲染失败，见上方日志'; return; }
+  showOutput(r);
+}
+function showOutput(r) {
+  if (!r.output) return;
+  const url = r.output + '?t=' + Date.now();
+  $('#renderOut').replaceChildren(
+    h('button', { class: 'primary', onclick: () => { stop(); mode = 'output'; current = null; video.src = url; setGain(1); updateNow(); updateMarkButtons(); ensureAudio(); video.play(); } },
+      `▶ 播放${r.draft ? '草稿' : '成片'}`),
+    h('a', { href: url, download: '' }, '下载 MP4'),
+  );
+}
+
+// ───────── 事件 ─────────
+$('#name').addEventListener('change', (e) => mutate(() => { P.project.name = e.target.value.trim() || P.project.name; }));
+$('#portrait').addEventListener('change', (e) => mutate(() => { P.project.portrait_mode = e.target.value; }));
+$('#undo').onclick = undo;
+$('#redo').onclick = redo;
+$('#save').onclick = save;
+$('#addGap').onclick = addGap;
+$('#playAll').onclick = playAll;
+$('#stop').onclick = stop;
+$('#setIn').onclick = () => setMark('in');
+$('#setOut').onclick = () => setMark('out');
+$('#renderDraft').onclick = () => startRender(true);
+$('#renderFinal').onclick = () => startRender(false);
+document.addEventListener('keydown', (e) => {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
+  else if (mod && e.key.toLowerCase() === 'z' && e.target.tagName !== 'INPUT') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+});
+window.addEventListener('beforeunload', (e) => { if (P && dirty()) { e.preventDefault(); e.returnValue = ''; } });
+load();
+</script>
+</body>
+</html>
