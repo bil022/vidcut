@@ -1,0 +1,5 @@
+# Apache：所有请求都交给 index.php（工作目录、脚本等文件不会被直接访问）
+RewriteEngine On
+RewriteRule ^ index.php [L]
+# 可选：指定工作目录
+# SetEnv VIDCUT_WORK work_real

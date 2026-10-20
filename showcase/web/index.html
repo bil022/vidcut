@@ -8,11 +8,11 @@
 :root {
   --bg: #f6f6f4; --panel: #fff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dd;
   --accent: #2f6fde; --accent-text: #fff; --danger: #c0392b; --ok: #2e8b57;
-  --gap: #2b2b2b; --playing: #fff4d6; --selected: #e8f0ff;
+  --gap: #2b2b2b; --playing: #fff4d6; --selected: #e8f0ff; --title: #f3ecff;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #161615; --panel: #1f1f1e; --text: #ecece8; --muted: #9a9a94; --line: #33332f;
-    --accent: #5b8ff0; --playing: #3a3320; --selected: #1f2c44; --gap: #000; }
+    --accent: #5b8ff0; --playing: #3a3320; --selected: #1f2c44; --gap: #000; --title: #2a2338; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text);
@@ -24,54 +24,82 @@ header input#name { font-size: 16px; font-weight: 600; border: 1px solid transpa
 header input#name:hover, header input#name:focus { border-color: var(--line); }
 .spacer { flex: 1; }
 .muted { color: var(--muted); }
+.small { font-size: 12px; }
 button { font: inherit; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line);
   background: var(--panel); color: var(--text); cursor: pointer; }
 button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: .45; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 button.icon { padding: 2px 7px; }
+button.link { border: none; background: none; color: var(--accent); padding: 0 2px; }
 #saveState.dirty { color: var(--danger); }
 main { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 16px; padding: 16px; }
-@media (max-width: 900px) { main { grid-template-columns: 1fr; } aside { order: -1; } }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } aside { order: -1; position: static !important; } }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
 ol#items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px;
   display: grid; grid-template-columns: 22px 120px minmax(0, 1fr); gap: 10px; align-items: start; }
-.card.selected { background: var(--selected); border-color: var(--accent); }
+.card.title-card { background: var(--title); }
+.card.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .card.playing { background: var(--playing); }
 .card.drop-before { box-shadow: 0 -3px 0 var(--accent); }
 .card.drop-after { box-shadow: 0 3px 0 var(--accent); }
 .handle { cursor: grab; color: var(--muted); user-select: none; text-align: center; padding-top: 4px; }
-.card img { width: 120px; aspect-ratio: 16/9; object-fit: contain; background: #000; border-radius: 6px; display: block; }
-.card.gap { grid-template-columns: 22px 120px minmax(0, 1fr); }
-.gapthumb { width: 120px; aspect-ratio: 16/9; background: var(--gap); border-radius: 6px; color: #888;
-  display: flex; align-items: center; justify-content: center; font-size: 12px; }
+.card img, .thumbbox { width: 120px; aspect-ratio: 16/9; object-fit: contain; background: #000; border-radius: 6px; display: block; }
+.thumbbox { display: flex; align-items: center; justify-content: center; color: #ddd; font-size: 12px;
+  text-align: center; padding: 4px; overflow: hidden; background-size: cover; background-position: center; }
+.thumbbox.gapthumb { background-color: var(--gap); color: #888; }
 .title { font-weight: 600; }
 .meta { font-size: 12px; color: var(--muted); }
 .summary { font-size: 13px; margin: 2px 0 6px; }
-.fields { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 12px; color: var(--muted); }
+.speech { font-size: 12px; margin: 0 0 6px; border-left: 3px solid var(--line); padding-left: 8px; }
+.speech .seg { cursor: pointer; }
+.speech .seg:hover { color: var(--accent); }
+.speech .seg.cut { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--line); }
+.speech .ts { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+.fields { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 12px; color: var(--muted); margin-top: 4px; }
 .fields label { display: inline-flex; gap: 4px; align-items: center; }
-.fields input { width: 64px; font: inherit; color: var(--text); background: var(--bg);
+.fields input, .fields select { font: inherit; color: var(--text); background: var(--bg);
   border: 1px solid var(--line); border-radius: 5px; padding: 2px 4px; }
+.fields input[type=number] { width: 64px; }
+.fields input.text { width: 220px; max-width: 100%; }
 .fields input.bad { border-color: var(--danger); }
-.actions { display: flex; gap: 4px; margin-left: auto; }
+.caprow { border-top: 1px dashed var(--line); padding-top: 6px; }
+.actions { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
-aside { position: sticky; top: 64px; align-self: start; display: flex; flex-direction: column; gap: 4px; }
+aside { position: sticky; top: 64px; align-self: start; display: flex; flex-direction: column; gap: 10px; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
-.player { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; }
+.player { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; container-type: size; }
 .player video { width: 100%; height: 100%; object-fit: contain; display: block; }
-#cover { position: absolute; inset: 0; background: #000; color: #777; display: none;
-  align-items: center; justify-content: center; font-size: 13px; pointer-events: none; }
+.overlay { position: absolute; inset: 0; display: none; pointer-events: none; }
+#cover { background: #000; color: #777; align-items: center; justify-content: center; font-size: 13px; }
+#titleOv { background: #000; overflow: hidden; }
+#titleOv .bg { position: absolute; inset: -6%; background-size: cover; background-position: center;
+  filter: blur(14px) brightness(.8); }
+#titleOv .txt { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; color: #fff; text-align: center; text-shadow: 0 1px 6px rgba(0,0,0,.6); padding: 0 10%; }
+#titleOv .t1 { font-size: 8.5cqh; font-weight: 600; line-height: 1.3; }
+#titleOv .t2 { font-size: 4.2cqh; color: #ebebeb; margin-top: 2.5cqh; }
+#capOv { align-items: center; justify-content: center; }
+#capOv span { position: absolute; left: 50%; transform: translate(-50%, -50%); max-width: 80%; text-align: center;
+  background: rgba(0,0,0,.5); color: #fff; font-weight: 600; font-size: 4.8cqh; line-height: 1.35;
+  padding: .3em .45em; border-radius: .3em; }
+/* 留出播放器控制条的高度，避免字幕被挡住 */
+#subOv span { position: absolute; left: 50%; bottom: calc(3% + 44px); transform: translateX(-50%); max-width: 86%; text-align: center;
+  color: #fff; font-size: max(13px, 4cqh); line-height: 1.35; text-shadow: 0 0 4px #000, 0 1px 3px #000, 0 0 1px #000; }
 #nowInfo { font-size: 12px; color: var(--muted); min-height: 18px; margin-top: 6px; }
 h3 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 18px 0 6px; }
-#excluded { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
-#excluded li { display: flex; gap: 8px; align-items: center; font-size: 13px; background: var(--panel);
+#library { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+#library li { display: flex; gap: 10px; align-items: center; font-size: 13px; background: var(--panel);
   border: 1px dashed var(--line); border-radius: 8px; padding: 6px 10px; }
-#excluded img { width: 64px; aspect-ratio: 16/9; object-fit: contain; background: #000; border-radius: 4px; }
-pre#renderLog { font-size: 11px; max-height: 140px; overflow: auto; background: var(--bg); padding: 6px;
+#library img { width: 72px; aspect-ratio: 16/9; object-fit: contain; background: #000; border-radius: 4px; cursor: pointer; }
+#library .grow { flex: 1; min-width: 0; }
+pre#jobLog { font-size: 11px; max-height: 160px; overflow: auto; background: var(--bg); padding: 6px;
   border-radius: 6px; margin: 6px 0 0; white-space: pre-wrap; display: none; }
 #errors { color: var(--danger); font-size: 13px; white-space: pre-line; }
+#folder { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; }
 select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; }
-kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
 </style>
 </head>
 <body>
@@ -87,15 +115,25 @@ kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; paddin
 <main>
   <section>
     <div id="errors"></div>
+    <div class="toolbar">
+      <button id="addTitle">+ 标题卡</button>
+      <button id="addGap">+ 间隔</button>
+      <button id="sortTime" title="片头保持在最前；标题卡和间隔跟着它后面的那段一起移动">按拍摄时间排序</button>
+      <span class="muted small">新元素插在选中项之后。拖动 ⋮⋮ 调整顺序。</span>
+    </div>
     <ol id="items"></ol>
-    <div class="row"><button id="addGap">+ 插入间隔</button>
-      <span class="muted" style="font-size:12px">拖动 ⋮⋮ 调整顺序；点击卡片在右侧预览，可用“设为入点/出点”精确裁剪</span></div>
-    <h3>已排除</h3>
-    <ul id="excluded"></ul>
+    <h3>素材库 · 未用到的视频</h3>
+    <ul id="library"></ul>
   </section>
   <aside>
     <div class="panel">
-      <div class="player"><video id="video" playsinline controls preload="metadata"></video><div id="cover">间隔</div></div>
+      <div class="player">
+        <video id="video" playsinline controls preload="metadata"></video>
+        <div id="cover" class="overlay">间隔</div>
+        <div id="titleOv" class="overlay"><div class="bg"></div><div class="txt"><div class="t1"></div><div class="t2"></div></div></div>
+        <div id="capOv" class="overlay"><span></span></div>
+        <div id="subOv" class="overlay"><span></span></div>
+      </div>
       <div id="nowInfo"></div>
       <div class="row">
         <button id="playAll" class="primary">▶ 预览整条</button>
@@ -104,7 +142,7 @@ kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; paddin
         <button id="setIn" disabled>设为入点</button>
         <button id="setOut" disabled>设为出点</button>
       </div>
-      <div class="muted" style="font-size:12px">浏览器内实时预览：按顺序播放代理文件，应用裁剪、音量和淡入淡出（竖屏模糊背景只在渲染时生成）。</div>
+      <div class="muted small">浏览器内实时预览：按顺序播放代理文件，应用裁剪、音量、淡入淡出、标题卡和画面文字（竖屏模糊背景只在渲染时生成）。</div>
     </div>
     <div class="panel">
       <div class="row" style="margin-top:0">
@@ -114,8 +152,13 @@ kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; paddin
         <button id="renderDraft">出草稿</button>
         <button id="renderFinal">出 1080p 成片</button>
       </div>
-      <pre id="renderLog"></pre>
-      <div id="renderOut" class="row"></div>
+      <div class="row">
+        <input id="folder" placeholder="新素材目录（留空则重新扫描已有目录）">
+        <button id="update">扫描新素材</button>
+      </div>
+      <div id="sources" class="muted small"></div>
+      <pre id="jobLog"></pre>
+      <div id="jobOut" class="row"></div>
     </div>
   </aside>
 </main>
@@ -127,33 +170,48 @@ let P = null;            // 正在编辑的 project.json
 let saved = '';          // 上次保存的内容，用来判断是否有改动
 let undoStack = [], redoStack = [];
 let selectedId = null;
+let replacingId = null;  // 正在选择替换素材的片段
 
 const items = () => P.tracks[0].items;
 const sec = (ms) => (ms / 1000).toFixed(1);
 const fmtDur = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
-const proxyUrl = (mid) => `/media/${mid}/proxy.mp4`;
+const proxyUrl = (mid) => `media/${mid}/proxy.mp4`;
+const thumbUrl = (mid) => `media/${mid}/thumb.jpg`;
 const newId = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+const clipLen = (it) => it.out_ms - it.in_ms;
+const LANG = { zh: '中文', en: '英文', ja: '日语', ko: '韩语', yue: '粤语' };
+const langName = (code) => LANG[code] || code || '';
+// 落在 [from, to) 毫秒范围内的语音
+function speechText(mid, from = 0, to = Infinity) {
+  return (S.media[mid]?.transcript || []).filter((s) => s.end * 1000 > from && s.start * 1000 < to).map((s) => s.text).join(' ');
+}
 
 function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else if (k === 'class') el.className = v;
+    else if (k === 'style') el.style.cssText = v;
+    else if (k === 'value') el.value = v;
     else if (v !== false && v != null) el.setAttribute(k, v === true ? '' : v);
   }
-  for (const c of children.flat()) if (c != null) el.append(c);
+  for (const c of children.flat()) if (c != null && c !== false) el.append(c);
   return el;
 }
+const stop_ = (fn) => (e) => { e.stopPropagation(); fn(e); };
 
 // ───────── 状态与撤销 ─────────
+async function fetchState() { S = await (await fetch('api/state')).json(); }
+
 async function load() {
-  S = await (await fetch('/api/state')).json();
+  await fetchState();
   P = S.project;
   P.excluded = P.excluded || [];
   saved = JSON.stringify(P);
   render();
-  if (S.render.status === 'running') pollRender();
-  else if (S.render.output) showOutput(S.render);
+  if (S.job.status === 'running') pollJob();
+  else if (S.job.kind === 'render' && S.job.output) showOutput(S.job);
 }
 
 function mutate(fn) {
@@ -168,7 +226,7 @@ const dirty = () => JSON.stringify(P) !== saved;
 
 async function save() {
   $('#errors').textContent = '';
-  const r = await fetch('/api/project', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(P) });
+  const r = await fetch('api/project', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(P) });
   const data = await r.json();
   if (!r.ok) { $('#errors').textContent = '保存失败：\n' + (data.errors || [data.error]).join('\n'); return false; }
   saved = JSON.stringify(P);
@@ -182,16 +240,17 @@ function render() {
   $('#name').value = P.project.name;
   $('#portrait').value = P.project.portrait_mode;
   const ol = $('#items');
-  ol.replaceChildren(...items().map((it, i) => it.type === 'clip' ? clipCard(it, i) : gapCard(it, i)));
-  $('#excluded').replaceChildren(...P.excluded.map(excludedRow));
-  if (!P.excluded.length) $('#excluded').append(h('li', { class: 'muted' }, '（无）'));
-  const total = items().reduce((t, it) => t + (it.type === 'clip' ? it.out_ms - it.in_ms : it.duration_ms), 0);
+  ol.replaceChildren(...items().map((it, i) =>
+    it.type === 'clip' ? clipCard(it, i) : it.type === 'title' ? titleCard(it, i) : gapCard(it, i)));
+  renderLibrary();
+  const total = items().reduce((t, it) => t + (it.type === 'clip' ? clipLen(it) : it.duration_ms), 0);
   $('#total').textContent = `${items().filter((i) => i.type === 'clip').length} 段 · ${fmtDur(total)}`;
   const st = $('#saveState');
   st.className = dirty() ? 'dirty' : 'muted';
   st.textContent = dirty() ? '● 未保存' : (st.dataset.at ? `已保存 ${st.dataset.at}` : '已保存');
   $('#undo').disabled = !undoStack.length;
   $('#redo').disabled = !redoStack.length;
+  $('#sources').textContent = S.sources?.length ? `已扫描的目录：${S.sources.join('；')}` : '';
   updateMarkButtons();
   markPlaying();
 }
@@ -207,113 +266,281 @@ function numField(label, value, onSet, opts = {}) {
   return h('label', {}, label, input, opts.unit || '');
 }
 
+function textField(label, value, onSet, opts = {}) {
+  const input = h('input', { type: 'text', class: 'text', value: value || '', maxlength: opts.max || 60, placeholder: opts.placeholder || '', 'aria-label': label });
+  input.addEventListener('change', () => mutate(() => onSet(input.value)));
+  input.addEventListener('click', (e) => e.stopPropagation());
+  return h('label', {}, label, input);
+}
+
+function selectField(label, value, options, onSet) {
+  const sel = h('select', { 'aria-label': label }, ...options.map(([v, t]) => h('option', { value: v }, t)));
+  sel.value = value;
+  sel.addEventListener('change', () => mutate(() => onSet(sel.value)));
+  sel.addEventListener('click', (e) => e.stopPropagation());
+  return h('label', {}, label, sel);
+}
+
 function moveBtns(i) {
   return [
-    h('button', { class: 'icon', title: '上移', disabled: i === 0, onclick: (e) => { e.stopPropagation(); move(i, i - 1); } }, '↑'),
-    h('button', { class: 'icon', title: '下移', disabled: i === items().length - 1, onclick: (e) => { e.stopPropagation(); move(i, i + 1); } }, '↓'),
+    h('button', { class: 'icon', title: '上移', disabled: i === 0, onclick: stop_(() => move(i, i - 1)) }, '↑'),
+    h('button', { class: 'icon', title: '下移', disabled: i === items().length - 1, onclick: stop_(() => move(i, i + 1)) }, '↓'),
   ];
+}
+
+function cardShell(it, i, cls, thumb, body) {
+  const card = h('li', { class: `card ${cls}` + (it.id === selectedId ? ' selected' : ''), 'data-id': it.id, 'data-idx': i },
+    h('div', { class: 'handle', draggable: 'true', title: '拖动排序' }, '⋮⋮'), thumb, h('div', {}, ...body));
+  addDrag(card, i);
+  return card;
 }
 
 function clipCard(it, i) {
   const m = S.media[it.media_id] || {};
   const ai = it.ai || {};
-  const len = it.out_ms - it.in_ms;
-  const bad = !(0 <= it.in_ms && it.in_ms < it.out_ms && it.out_ms <= m.duration_ms);
-  const card = h('li', { class: 'card clip' + (it.id === selectedId ? ' selected' : ''), 'data-id': it.id, 'data-idx': i },
-    h('div', { class: 'handle', draggable: 'true', title: '拖动排序' }, '⋮⋮'),
-    h('img', { src: `/media/${it.media_id}/thumb.jpg`, alt: '', loading: 'lazy' }),
-    h('div', {},
-      h('div', { class: 'title' }, ai.title || it.name),
-      h('div', { class: 'meta' }, `${it.name} · ${it.group || ''} · 原长 ${sec(m.duration_ms)}s${m.portrait ? ' · 竖屏' : ''}`),
-      ai.summary ? h('div', { class: 'summary' }, ai.summary) : null,
-      h('div', { class: 'fields' },
-        numField('入点', sec(it.in_ms), (v) => { it.in_ms = clamp(Math.round(v * 1000), 0, it.out_ms - 200); }, { unit: 's', min: 0 }),
-        numField('出点', sec(it.out_ms), (v) => { it.out_ms = clamp(Math.round(v * 1000), it.in_ms + 200, m.duration_ms); }, { unit: 's', min: 0 }),
-        h('span', { class: bad ? 'bad' : '' }, `= ${sec(len)}s`),
-        numField('音量', it.volume_db ?? 0, (v) => { it.volume_db = clamp(Math.round(v), -30, 30); }, { unit: 'dB', step: '1', min: -30, max: 30 }),
-        numField('淡入', sec(it.fade_in_ms || 0), (v) => { it.fade_in_ms = clamp(Math.round(v * 1000), 0, len - (it.fade_out_ms || 0)); }, { unit: 's', min: 0 }),
-        numField('淡出', sec(it.fade_out_ms || 0), (v) => { it.fade_out_ms = clamp(Math.round(v * 1000), 0, len - (it.fade_in_ms || 0)); }, { unit: 's', min: 0 }),
-        h('span', { class: 'actions' },
-          ...moveBtns(i),
-          h('button', { class: 'icon', title: '预览这一段', onclick: (e) => { e.stopPropagation(); select(it.id, true); } }, '▶'),
-          h('button', { class: 'icon', title: '排除这一段', onclick: (e) => { e.stopPropagation(); excludeClip(i); } }, '✕'),
-        ),
+  const len = clipLen(it);
+  const cap = it.caption;
+  const body = [
+    h('div', { class: 'title' }, ai.title || it.name),
+    h('div', { class: 'meta' }, [it.name, it.group, `原长 ${sec(m.duration_ms)}s`, m.portrait && '竖屏'].filter(Boolean).join(' · ')),
+    ai.summary && ai.summary !== speechText(it.media_id) ? h('div', { class: 'summary' }, ai.summary) : null,
+    speechLine(it),
+    h('div', { class: 'fields' },
+      numField('入点', sec(it.in_ms), (v) => { it.in_ms = clamp(Math.round(v * 1000), 0, it.out_ms - 200); fixCaption(it); }, { unit: 's', min: 0 }),
+      numField('出点', sec(it.out_ms), (v) => { it.out_ms = clamp(Math.round(v * 1000), it.in_ms + 200, m.duration_ms); fixCaption(it); }, { unit: 's', min: 0 }),
+      h('span', {}, `= ${sec(len)}s`),
+      numField('音量', it.volume_db ?? 0, (v) => { it.volume_db = clamp(Math.round(v), -30, 30); }, { unit: 'dB', step: '1', min: -30, max: 30 }),
+      numField('淡入', sec(it.fade_in_ms || 0), (v) => { it.fade_in_ms = clamp(Math.round(v * 1000), 0, len - (it.fade_out_ms || 0)); }, { unit: 's', min: 0 }),
+      numField('淡出', sec(it.fade_out_ms || 0), (v) => { it.fade_out_ms = clamp(Math.round(v * 1000), 0, len - (it.fade_in_ms || 0)); }, { unit: 's', min: 0 }),
+      h('span', { class: 'actions' },
+        ...moveBtns(i),
+        h('button', { class: 'icon', title: '预览这一段', onclick: stop_(() => select(it.id, true)) }, '▶'),
+        h('button', { class: 'icon', title: '换成另一段素材', onclick: stop_(() => { replacingId = replacingId === it.id ? null : it.id; render(); }) }, '替换'),
+        h('button', { class: 'icon', title: '移出时间线（放回素材库）', onclick: stop_(() => excludeClip(i)) }, '✕'),
       ),
     ),
-  );
+    replacingId === it.id ? replacePicker(it) : null,
+    cap
+      ? h('div', { class: 'fields caprow' },
+          textField('画面文字', cap.text, (v) => { cap.text = v.trim(); }, { max: 60 }),
+          selectField('位置', cap.position || 'bottom', [['bottom', '下方'], ['center', '居中'], ['top', '上方']], (v) => { cap.position = v; }),
+          numField('从', sec(cap.start_ms), (v) => { cap.start_ms = clamp(Math.round(v * 1000), 0, cap.end_ms - 200); }, { unit: 's', min: 0 }),
+          numField('到', sec(cap.end_ms), (v) => { cap.end_ms = clamp(Math.round(v * 1000), cap.start_ms + 200, len); }, { unit: 's', min: 0 }),
+          h('span', { class: 'actions' }, h('button', { class: 'icon', title: '删除画面文字', onclick: stop_(() => mutate(() => { delete it.caption; })) }, '✕')),
+        )
+      : h('div', { class: 'fields' },
+          h('button', { class: 'link', onclick: stop_(() => addCaption(it)) }, '+ 画面文字'),
+          ai.title && ai.source !== 'heuristic' ? h('span', { class: 'muted' }, `（会先填入 AI 标题“${ai.title}”）`) : null),
+  ];
+  const card = cardShell(it, i, 'clip', h('img', { src: thumbUrl(it.media_id), alt: '', loading: 'lazy' }), body);
   card.addEventListener('click', () => select(it.id, false));
-  addDrag(card, i);
+  return card;
+}
+
+// 卡片上逐句列出语音（原文：中文就是中文，英文就是英文）；点一句跳到那个位置
+function speechLine(it) {
+  const segs = S.media[it.media_id]?.transcript || [];
+  if (!segs.length) return null;
+  const lang = langName(S.media[it.media_id].language);
+  return h('div', { class: 'speech' },
+    h('div', { class: 'muted' }, `语音${lang ? `（${lang}）` : ''}`),
+    ...segs.map((sg) => {
+      const inside = sg.end * 1000 > it.in_ms && sg.start * 1000 < it.out_ms;
+      return h('div', { class: 'seg' + (inside ? '' : ' cut'),
+        title: inside ? '点击跳到这句' : '这句在入出点范围外，不会出现在成片里',
+        onclick: stop_(() => jumpTo(it, sg.start)) },
+        h('span', { class: 'ts' }, mmss(sg.start)), sg.text);
+    }));
+}
+const mmss = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
+
+async function jumpTo(it, t) {
+  stop();
+  selectedId = it.id;
+  mode = 'clip';
+  render();
+  await showClip(it, false);
+  await seek(t);
+  lastT = video.currentTime * 1000;
+  applyEffects();
+  updateNow();
+}
+
+function replacePicker(it) {
+  const others = Object.entries(S.media).filter(([mid]) => mid !== it.media_id)
+    .sort((a, b) => (a[1].created < b[1].created ? -1 : 1));
+  const sel = h('select', { 'aria-label': '替换为' },
+    h('option', { value: '' }, '选择要换成的素材…'),
+    ...others.map(([mid, m]) => h('option', { value: mid },
+      `${m.name}${usedIds().has(mid) ? '（已在时间线）' : ''} · ${m.summary?.title || ''} · ${sec(m.duration_ms)}s`)));
+  sel.addEventListener('click', (e) => e.stopPropagation());
+  sel.addEventListener('change', () => { if (sel.value) replaceClip(it, sel.value); });
+  return h('div', { class: 'fields' }, h('label', {}, '替换为', sel),
+    h('span', { class: 'muted' }, '保留位置、音量和淡入淡出；入出点改用新素材的 AI 建议'));
+}
+
+function titleCard(it, i) {
+  const next = nextClip(i);
+  const thumb = h('div', { class: 'thumbbox', style: it.background === 'blur_next' && next ? `background-image:linear-gradient(rgba(0,0,0,.45),rgba(0,0,0,.45)),url(${thumbUrl(next.media_id)})` : '' }, it.text);
+  const body = [
+    h('div', { class: 'title' }, it.role === 'opening' ? '片头标题' : '标题卡'),
+    h('div', { class: 'fields' },
+      textField('标题', it.text, (v) => { it.text = v.trim() || it.text; }, { max: 40 }),
+      textField('副标题', it.subtitle, (v) => { it.subtitle = v.trim(); }, { max: 60, placeholder: '可留空' }),
+    ),
+    h('div', { class: 'fields' },
+      numField('时长', sec(it.duration_ms), (v) => { it.duration_ms = clamp(Math.round(v * 1000), 500, 15000); fixFades(it, it.duration_ms); }, { unit: 's', min: 0.5 }),
+      selectField('背景', it.background || 'black', [['blur_next', '下一段画面（模糊）'], ['black', '黑色']], (v) => { it.background = v; }),
+      numField('淡入', sec(it.fade_in_ms || 0), (v) => { it.fade_in_ms = clamp(Math.round(v * 1000), 0, it.duration_ms - (it.fade_out_ms || 0)); }, { unit: 's', min: 0 }),
+      numField('淡出', sec(it.fade_out_ms || 0), (v) => { it.fade_out_ms = clamp(Math.round(v * 1000), 0, it.duration_ms - (it.fade_in_ms || 0)); }, { unit: 's', min: 0 }),
+      h('span', { class: 'actions' },
+        ...moveBtns(i),
+        h('button', { class: 'icon', title: '预览标题卡', onclick: stop_(() => { selectedId = it.id; render(); previewTitle(it, i); }) }, '▶'),
+        h('button', { class: 'icon', title: '删除标题卡', onclick: stop_(() => mutate(() => items().splice(i, 1))) }, '✕'),
+      ),
+    ),
+  ];
+  const card = cardShell(it, i, 'title-card', thumb, body);
+  card.addEventListener('click', () => { stop(); selectedId = it.id; render(); showTitle(it, i, false); });
   return card;
 }
 
 function gapCard(it, i) {
-  const card = h('li', { class: 'card gap' + (it.id === selectedId ? ' selected' : ''), 'data-id': it.id, 'data-idx': i },
-    h('div', { class: 'handle', draggable: 'true', title: '拖动排序' }, '⋮⋮'),
-    h('div', { class: 'gapthumb' }, '黑场'),
-    h('div', {},
-      h('div', { class: 'title' }, '间隔'),
-      h('div', { class: 'fields' },
-        numField('时长', sec(it.duration_ms), (v) => { it.duration_ms = clamp(Math.round(v * 1000), 100, 60000); }, { unit: 's', min: 0.1 }),
-        h('span', { class: 'actions' },
-          ...moveBtns(i),
-          h('button', { class: 'icon', title: '删除间隔', onclick: (e) => { e.stopPropagation(); mutate(() => items().splice(i, 1)); } }, '✕'),
-        ),
+  const body = [
+    h('div', { class: 'title' }, '间隔'),
+    h('div', { class: 'fields' },
+      numField('时长', sec(it.duration_ms), (v) => { it.duration_ms = clamp(Math.round(v * 1000), 100, 60000); }, { unit: 's', min: 0.1 }),
+      h('span', { class: 'actions' },
+        ...moveBtns(i),
+        h('button', { class: 'icon', title: '删除间隔', onclick: stop_(() => mutate(() => items().splice(i, 1))) }, '✕'),
       ),
     ),
-  );
+  ];
+  const card = cardShell(it, i, 'gap', h('div', { class: 'thumbbox gapthumb' }, '黑场'), body);
   card.addEventListener('click', () => { selectedId = it.id; render(); });
-  addDrag(card, i);
   return card;
 }
 
-function excludedRow(e) {
-  return h('li', {},
-    h('img', { src: `/media/${e.media_id}/thumb.jpg`, alt: '' }),
-    h('span', {}, h('b', {}, e.name), ' ', h('span', { class: 'muted' }, e.reason || '')),
-    h('span', { class: 'spacer' }),
-    h('button', { onclick: () => restoreClip(e) }, '加回'),
-  );
+// ───────── 素材库 ─────────
+const usedIds = () => new Set(items().filter((x) => x.type === 'clip').map((x) => x.media_id));
+
+function renderLibrary() {
+  const used = usedIds();
+  const reasons = Object.fromEntries(P.excluded.map((e) => [e.media_id, e.reason]));
+  const unused = Object.entries(S.media).filter(([mid]) => !used.has(mid))
+    .sort((a, b) => (a[1].created < b[1].created ? -1 : 1));
+  const lib = $('#library');
+  lib.replaceChildren(...unused.map(([mid, m]) => h('li', {},
+    h('img', { src: thumbUrl(mid), alt: '', title: '预览原片', onclick: () => previewSource(mid) }),
+    h('div', { class: 'grow' },
+      h('div', {}, h('b', {}, m.summary?.title || m.name), ' ', h('span', { class: 'muted small' }, `${m.name} · ${sec(m.duration_ms)}s · ${m.created.slice(0, 10)}`)),
+      h('div', { class: 'muted small' }, reasons[mid] ? `已排除：${reasons[mid]}` : (m.summary ? '未使用' : '新素材（还没有 AI 摘要）')),
+      speechText(mid) ? h('div', { class: 'muted small' }, `语音${m.language ? `（${langName(m.language)}）` : ''}：${speechText(mid)}`) : null,
+    ),
+    h('button', { onclick: () => addMedia(mid) }, '加入'),
+  )));
+  if (!unused.length) lib.append(h('li', { class: 'muted' }, '所有素材都已在时间线上'));
 }
 
-const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+function clipFromMedia(mid, base = {}) {
+  const m = S.media[mid];
+  const s = m.summary || {};
+  const ok = Number.isInteger(s.in_ms) && s.out_ms > s.in_ms && s.out_ms - s.in_ms >= 200 && s.out_ms <= m.duration_ms;
+  return {
+    id: newId('c'), type: 'clip', volume_db: 0, fade_in_ms: 0, fade_out_ms: 0, group: '', ...base,
+    media_id: mid, name: m.name,
+    in_ms: ok ? s.in_ms : 0, out_ms: ok ? s.out_ms : m.duration_ms,
+    ai: { title: s.title || '', summary: s.summary || '', keywords: s.keywords || [], reason: s.reason || '', place: s.place || '', source: s.source || '' },
+  };
+}
+
+function addMedia(mid) {
+  const m = S.media[mid];
+  const clip = clipFromMedia(mid);
+  mutate(() => {
+    P.excluded = P.excluded.filter((x) => x.media_id !== mid);
+    // 按拍摄时间插到合适的位置（插在后一段前面的标题卡/间隔之前）
+    let idx = items().findIndex((it) => it.type === 'clip' && S.media[it.media_id]?.created > m.created);
+    if (idx < 0) idx = items().length;
+    else while (idx > 0 && items()[idx - 1].type !== 'clip' && items()[idx - 1].role !== 'opening') idx--;
+    items().splice(idx, 0, clip);
+    selectedId = clip.id;
+  });
+}
+
+function replaceClip(it, mid) {
+  const keep = { id: it.id, volume_db: it.volume_db, fade_in_ms: it.fade_in_ms, fade_out_ms: it.fade_out_ms, group: it.group };
+  const fresh = clipFromMedia(mid, keep);
+  if (it.caption) fresh.caption = { ...it.caption };
+  mutate(() => {
+    Object.keys(it).forEach((k) => delete it[k]);
+    Object.assign(it, fresh);
+    fixFades(it, clipLen(it));
+    fixCaption(it);
+    P.excluded = P.excluded.filter((x) => x.media_id !== mid);
+    replacingId = null;
+  });
+  if (selectedId === it.id) select(it.id, false);
+}
+
+function excludeClip(i) {
+  mutate(() => {
+    const [it] = items().splice(i, 1);
+    if (!items().some((x) => x.media_id === it.media_id))
+      P.excluded.push({ media_id: it.media_id, name: it.name, reason: '手动排除' });
+    if (selectedId === it.id) selectedId = null;
+  });
+}
+
+// ───────── 编辑操作 ─────────
+function fixFades(it, len) {
+  it.fade_in_ms = Math.min(it.fade_in_ms || 0, Math.floor(len / 2));
+  it.fade_out_ms = Math.min(it.fade_out_ms || 0, Math.floor(len / 2));
+}
+function fixCaption(it) {
+  const c = it.caption;
+  if (!c) return;
+  const len = clipLen(it);
+  c.end_ms = clamp(c.end_ms, 200, len);
+  c.start_ms = clamp(c.start_ms, 0, c.end_ms - 200);
+}
+
+function addCaption(it) {
+  const ai = it.ai || {};
+  const text = ai.source !== 'heuristic' && ai.title ? ai.title : '';
+  mutate(() => { it.caption = { text, position: 'bottom', start_ms: 0, end_ms: Math.min(clipLen(it), 4000) }; });
+  setTimeout(() => document.querySelector(`[data-id="${it.id}"] .caprow input`)?.focus(), 0);
+}
+
+function insertAfterSelected(item) {
+  const i = items().findIndex((it) => it.id === selectedId);
+  mutate(() => { items().splice(i < 0 ? items().length : i + 1, 0, item); selectedId = item.id; });
+}
+const addGap = () => insertAfterSelected({ id: newId('g'), type: 'gap', duration_ms: 1000, background: 'black' });
+const addTitle = () => insertAfterSelected({ id: newId('t'), type: 'title', text: '新标题', subtitle: '',
+  duration_ms: 2500, background: 'blur_next', fade_in_ms: 400, fade_out_ms: 400 });
 
 function move(from, to) {
   if (to < 0 || to >= items().length || from === to) return;
   mutate(() => { const [x] = items().splice(from, 1); items().splice(to, 0, x); });
 }
 
-function excludeClip(i) {
+function sortByTime() {
   mutate(() => {
-    const [it] = items().splice(i, 1);
-    P.excluded.push({ media_id: it.media_id, name: it.name, reason: '手动排除' });
-    if (selectedId === it.id) selectedId = null;
+    const its = items();
+    const pinned = its.filter((it) => it.role === 'opening');
+    const blocks = [];
+    let pending = [];
+    for (const it of its.filter((x) => x.role !== 'opening')) {
+      pending.push(it);  // 标题卡、间隔跟着它后面那段视频一起移动
+      if (it.type === 'clip') { blocks.push({ t: S.media[it.media_id]?.created || '', items: pending }); pending = []; }
+    }
+    blocks.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
+    P.tracks[0].items = [...pinned, ...blocks.flatMap((b) => b.items), ...pending];
   });
 }
 
-function restoreClip(e) {
-  const m = S.media[e.media_id];
-  const s = m.summary || {};
-  const ok = Number.isInteger(s.in_ms) && s.out_ms > s.in_ms && s.out_ms - s.in_ms >= 200;
-  const clip = {
-    id: newId('c'), type: 'clip', media_id: e.media_id, name: m.name,
-    in_ms: ok ? s.in_ms : 0, out_ms: ok ? s.out_ms : m.duration_ms,
-    volume_db: 0, fade_in_ms: 0, fade_out_ms: 0, group: '',
-    ai: { title: s.title, summary: s.summary, keywords: s.keywords || [], reason: s.reason, source: s.source },
-  };
-  mutate(() => {
-    P.excluded = P.excluded.filter((x) => x !== e && x.media_id !== e.media_id);
-    // 按拍摄时间插回合适的位置
-    const idx = items().findIndex((it) => it.type === 'clip' && S.media[it.media_id]?.created > m.created);
-    items().splice(idx < 0 ? items().length : idx, 0, clip);
-    selectedId = clip.id;
-  });
-}
-
-function addGap() {
-  const i = items().findIndex((it) => it.id === selectedId);
-  mutate(() => items().splice(i < 0 ? items().length : i + 1, 0,
-    { id: newId('g'), type: 'gap', duration_ms: 1000, background: 'black' }));
-}
+function nextClip(i) { return items().slice(i + 1).find((x) => x.type === 'clip'); }
 
 // ───────── 拖动排序 ─────────
 let dragFrom = null;
@@ -343,8 +570,8 @@ function addDrag(card, i) {
 const clearDrop = () => document.querySelectorAll('.drop-before, .drop-after').forEach((c) => c.classList.remove('drop-before', 'drop-after'));
 
 // ───────── 预览播放器 ─────────
-// mode: idle | clip（单段预览）| all（整条预览）| output（看渲染结果）
-let mode = 'idle', playIdx = -1, current = null, gapTimer = null, lastT = 0;
+// mode: idle | clip（单段预览）| all（整条预览）| title（标题卡预览）| source（素材原片）| output（渲染结果）
+let mode = 'idle', playIdx = -1, current = null, itemTimer = null, lastT = 0, titleStart = 0;
 let audioCtx = null, gainNode = null;
 
 function ensureAudio() {
@@ -376,15 +603,42 @@ function seek(t) {
   });
 }
 
+function hideOverlays() {
+  for (const id of ['#cover', '#titleOv', '#capOv', '#subOv']) $(id).style.display = 'none';
+  $('#titleOv').style.opacity = 1;
+}
+
 async function showClip(it, autoplay) {
   current = it;
-  $('#cover').style.display = 'none';
+  hideOverlays();
   await loadMedia(proxyUrl(it.media_id));
   await seek(it.in_ms / 1000);
   lastT = video.currentTime * 1000;
-  applyFade();
+  applyEffects();
   if (autoplay) { ensureAudio(); await video.play().catch(() => {}); }
   updateNow();
+}
+
+function showTitle(it, i, animate) {
+  current = it;
+  video.pause();
+  hideOverlays();
+  const ov = $('#titleOv');
+  const next = nextClip(i);
+  ov.querySelector('.bg').style.backgroundImage = it.background === 'blur_next' && next ? `url(${thumbUrl(next.media_id)})` : 'none';
+  ov.querySelector('.t1').textContent = it.text;
+  ov.querySelector('.t2').textContent = it.subtitle || '';
+  ov.style.display = 'block';
+  ov.style.opacity = animate && it.fade_in_ms ? 0 : 1;
+  titleStart = performance.now();
+  updateNow();
+}
+
+function previewTitle(it, i) {
+  stop();
+  mode = 'title';
+  showTitle(it, i, true);
+  itemTimer = setTimeout(() => { if (mode === 'title') stop(); }, it.duration_ms);
 }
 
 function select(id, autoplay) {
@@ -395,7 +649,22 @@ function select(id, autoplay) {
   if (it?.type === 'clip') { mode = 'clip'; showClip(it, autoplay); }
 }
 
-async function playAll() {
+let sourceMid = null;
+async function previewSource(mid) {
+  stop();
+  mode = 'source';
+  sourceMid = mid;
+  current = null;
+  hideOverlays();
+  await loadMedia(proxyUrl(mid));
+  await seek(0);
+  setGain(1);
+  ensureAudio();
+  video.play().catch(() => {});
+  $('#nowInfo').textContent = `素材原片：${S.media[mid].name}`;
+}
+
+function playAll() {
   stop();
   ensureAudio();
   mode = 'all';
@@ -403,6 +672,7 @@ async function playAll() {
 }
 async function playAt(i) {
   if (mode !== 'all') return;
+  clearTimeout(itemTimer);
   playIdx = i;
   const it = items()[i];
   markPlaying();
@@ -410,50 +680,84 @@ async function playAt(i) {
   if (it.type === 'gap') {
     current = it;
     video.pause();
+    hideOverlays();
     $('#cover').style.display = 'flex';
     updateNow();
-    gapTimer = setTimeout(() => playAt(i + 1), it.duration_ms);
+    itemTimer = setTimeout(() => playAt(i + 1), it.duration_ms);
+  } else if (it.type === 'title') {
+    showTitle(it, i, true);
+    itemTimer = setTimeout(() => playAt(i + 1), it.duration_ms);
   } else {
     await showClip(it, true);
   }
 }
 
 function stop() {
-  clearTimeout(gapTimer);
-  mode = mode === 'output' ? 'output' : 'idle';
+  clearTimeout(itemTimer);
+  if (mode !== 'output' && mode !== 'source') mode = 'idle';
   playIdx = -1;
   video.pause();
   video.style.opacity = 1;
-  $('#cover').style.display = 'none';
+  hideOverlays();
   setGain(1);
   markPlaying();
 }
 
-function applyFade() {
-  if (!current || current.type !== 'clip' || mode === 'output') { video.style.opacity = 1; return; }
-  const t = video.currentTime * 1000 - current.in_ms;
-  const len = current.out_ms - current.in_ms;
+function fadeFactor(t, len, fi, fo) {
   let f = 1;
-  if (current.fade_in_ms) f = Math.min(f, t / current.fade_in_ms);
-  if (current.fade_out_ms) f = Math.min(f, (len - t) / current.fade_out_ms);
-  f = clamp(f, 0, 1);
+  if (fi) f = Math.min(f, t / fi);
+  if (fo) f = Math.min(f, (len - t) / fo);
+  return clamp(f, 0, 1);
+}
+
+// 播放器里按当前时间显示语音原文（视频时间就是原片时间）
+function showSpeech(mid, show) {
+  const t = video.currentTime;
+  const seg = show && mid ? (S.media[mid]?.transcript || []).find((sg) => t >= sg.start && t <= sg.end) : null;
+  const ov = $('#subOv');
+  if (seg) ov.querySelector('span').textContent = seg.text;
+  ov.style.display = seg ? 'block' : 'none';
+}
+
+function applyEffects() {
+  if (mode === 'source') { video.style.opacity = 1; showSpeech(sourceMid, true); return; }
+  if (!current || current.type !== 'clip' || mode === 'output') { video.style.opacity = 1; showSpeech(null, false); return; }
+  const t = video.currentTime * 1000 - current.in_ms;
+  const len = clipLen(current);
   // 只在入出点范围内应用效果，拖到范围外时按原样显示，方便找新的入出点
-  if (t < 0 || t > len) f = 1;
+  const inside = t >= 0 && t <= len;
+  const f = inside ? fadeFactor(t, len, current.fade_in_ms, current.fade_out_ms) : 1;
   video.style.opacity = f;
   setGain(dbToGain(current.volume_db) * f);
+  const c = current.caption;
+  const ov = $('#capOv');
+  if (inside && c && c.text && t >= c.start_ms && t <= c.end_ms) {
+    const span = ov.querySelector('span');
+    span.textContent = c.text;
+    span.style.top = { top: '13%', center: '50%' }[c.position] || '85%';
+    const fd = Math.min(300, (c.end_ms - c.start_ms) / 3);
+    ov.style.opacity = fadeFactor(t - c.start_ms, c.end_ms - c.start_ms, fd, fd);
+    ov.style.display = 'block';
+  } else {
+    ov.style.display = 'none';
+  }
+  showSpeech(current.media_id, inside);
 }
 
 function tick() {
-  if ((mode === 'clip' || mode === 'all') && current?.type === 'clip' && !video.paused) {
+  if (current?.type === 'title' && (mode === 'all' || mode === 'title')) {
+    const t = performance.now() - titleStart;
+    $('#titleOv').style.opacity = fadeFactor(t, current.duration_ms, current.fade_in_ms, current.fade_out_ms);
+  } else if ((mode === 'clip' || mode === 'all') && current?.type === 'clip') {
     const t = video.currentTime * 1000;
-    applyFade();
-    if (lastT < current.out_ms && t >= current.out_ms) {
+    applyEffects();
+    if (!video.paused && lastT < current.out_ms && t >= current.out_ms) {
       if (mode === 'all') playAt(playIdx + 1);
       else video.pause();
     }
     lastT = t;
-  } else if (current?.type === 'clip') {
-    lastT = video.currentTime * 1000;
+  } else if (mode === 'source') {
+    applyEffects();
   }
   requestAnimationFrame(tick);
 }
@@ -462,7 +766,7 @@ requestAnimationFrame(tick);
 video.addEventListener('ended', () => {
   if (mode === 'all' && current?.type === 'clip') playAt(playIdx + 1);
 });
-video.addEventListener('seeked', () => { lastT = video.currentTime * 1000; applyFade(); updateNow(); });
+video.addEventListener('seeked', () => { lastT = video.currentTime * 1000; applyEffects(); updateNow(); });
 video.addEventListener('timeupdate', updateNow);
 video.addEventListener('play', ensureAudio);
 
@@ -473,15 +777,17 @@ function markPlaying() {
 function updateNow() {
   const el = $('#nowInfo');
   if (mode === 'output') { el.textContent = '正在查看渲染结果'; return; }
+  if (mode === 'source') return;
   if (!current) { el.textContent = '点击左侧片段预览'; return; }
   if (current.type === 'gap') { el.textContent = `间隔 ${sec(current.duration_ms)}s`; return; }
+  if (current.type === 'title') { el.textContent = `标题卡「${current.text}」 ${sec(current.duration_ms)}s`; return; }
   el.textContent = `${current.name}  当前 ${video.currentTime.toFixed(2)}s  ·  入点 ${sec(current.in_ms)}s  出点 ${sec(current.out_ms)}s`;
   updateMarkButtons();
 }
 
 function selectedClip() {
   const it = items().find((x) => x.id === selectedId);
-  return it?.type === 'clip' && mode !== 'output' && video.getAttribute('src') === proxyUrl(it.media_id) ? it : null;
+  return it?.type === 'clip' && mode !== 'output' && mode !== 'source' && video.getAttribute('src') === proxyUrl(it.media_id) ? it : null;
 }
 function updateMarkButtons() {
   const it = selectedClip();
@@ -495,32 +801,50 @@ function setMark(which) {
   mutate(() => {
     if (which === 'in') it.in_ms = clamp(t, 0, it.out_ms - 200);
     else it.out_ms = clamp(t, it.in_ms + 200, S.media[it.media_id].duration_ms);
+    fixCaption(it);
   });
   current = it;
 }
 
-// ───────── 渲染 ─────────
+// ───────── 后台任务：渲染 / 加入新素材 ─────────
+async function startJob(url, body) {
+  $('#errors').textContent = '';
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) { $('#errors').textContent = (await r.json()).error; return; }
+  pollJob();
+}
 async function startRender(draft) {
   if (dirty() && !(await save())) return;
-  const r = await fetch('/api/render', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ draft }) });
-  if (!r.ok) { $('#errors').textContent = (await r.json()).error; return; }
-  pollRender();
+  startJob('api/render', { draft });
 }
-async function pollRender() {
-  const r = await (await fetch('/api/render')).json();
-  const log = $('#renderLog');
+function startUpdate() { startJob('api/update', { folder: $('#folder').value.trim() }); }
+
+async function pollJob() {
+  const r = await (await fetch('api/job')).json();
+  const log = $('#jobLog');
   log.style.display = 'block';
-  log.textContent = r.log.slice(-12).join('\n') || '开始渲染…';
+  log.textContent = r.log.slice(-14).join('\n') || '开始…';
   log.scrollTop = log.scrollHeight;
-  $('#renderDraft').disabled = $('#renderFinal').disabled = r.status === 'running';
-  if (r.status === 'running') { $('#renderOut').textContent = '渲染中…'; setTimeout(pollRender, 1000); return; }
-  if (r.status === 'failed') { $('#renderOut').textContent = '渲染失败，见上方日志'; return; }
-  showOutput(r);
+  const running = r.status === 'running';
+  for (const id of ['#renderDraft', '#renderFinal', '#update']) $(id).disabled = running;
+  const what = r.kind === 'update' ? '扫描新素材' : '渲染';
+  if (running) { $('#jobOut').textContent = `${what}中…`; setTimeout(pollJob, 1000); return; }
+  if (r.status === 'failed') { $('#jobOut').textContent = `${what}失败，见上方日志`; return; }
+  if (r.kind === 'update') {
+    const before = new Set(Object.keys(S.media));
+    await fetchState();  // 只刷新素材信息，正在编辑的项目保持不变
+    const added = Object.keys(S.media).filter((mid) => !before.has(mid)).length;
+    $('#folder').value = '';
+    $('#jobOut').textContent = added ? `新增 ${added} 个素材，在左侧“素材库”里点“加入”放进时间线` : '没有发现新素材';
+    render();
+  } else {
+    showOutput(r);
+  }
 }
 function showOutput(r) {
   if (!r.output) return;
   const url = r.output + '?t=' + Date.now();
-  $('#renderOut').replaceChildren(
+  $('#jobOut').replaceChildren(
     h('button', { class: 'primary', onclick: () => { stop(); mode = 'output'; current = null; video.src = url; setGain(1); updateNow(); updateMarkButtons(); ensureAudio(); video.play(); } },
       `▶ 播放${r.draft ? '草稿' : '成片'}`),
     h('a', { href: url, download: '' }, '下载 MP4'),
@@ -534,12 +858,15 @@ $('#undo').onclick = undo;
 $('#redo').onclick = redo;
 $('#save').onclick = save;
 $('#addGap').onclick = addGap;
+$('#addTitle').onclick = addTitle;
+$('#sortTime').onclick = sortByTime;
 $('#playAll').onclick = playAll;
-$('#stop').onclick = stop;
+$('#stop').onclick = () => { stop(); if (mode === 'source' || mode === 'output') mode = 'idle'; };
 $('#setIn').onclick = () => setMark('in');
 $('#setOut').onclick = () => setMark('out');
 $('#renderDraft').onclick = () => startRender(true);
 $('#renderFinal').onclick = () => startRender(false);
+$('#update').onclick = startUpdate;
 document.addEventListener('keydown', (e) => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }

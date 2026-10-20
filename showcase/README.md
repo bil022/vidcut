@@ -1,7 +1,7 @@
-# vidcut：AI 视频初剪命令行演示
+# vidcut：AI 视频初剪演示
 
-方案 v2 的最小可运行版本：没有网页、没有数据库、没有队列，只有一个 Python 脚本加 FFmpeg。
-每一步的结果都存成 JSON 文件，后面做 Web UI 时可以直接复用这些数据格式。
+方案 v2 的最小可运行版本：一个 Python 命令行脚本加 FFmpeg，外加一个本地网页编辑器。没有数据库、没有队列，
+每一步的结果都存成 JSON 文件。
 
 ## 需要
 
@@ -9,6 +9,8 @@
 - [`uv`](https://docs.astral.sh/uv/)（自动安装 Python 依赖）
 - 可选：Claude API key（`ANTHROPIC_API_KEY`），用于看图写摘要、给初剪建议；没有就用规则兜底
 - 可选：语音识别 `mlx-whisper`（Apple Silicon）或 `faster-whisper`（其他平台），由 `uv run --with` 临时装上
+- 标题文字用 Pillow 绘制（`uv` 会自动安装），需要系统里有中文字体：macOS 自带苹方；
+  Linux 装 Noto Sans CJK；也可以用环境变量 `VIDCUT_FONT` 指定字体文件
 
 ## 快速开始
 
@@ -41,12 +43,17 @@ uv run --with mlx-whisper vidcut.py transcribe --model models/whisper-small-mlx
 | `scan <目录>` | 内容哈希做 ID（自动去重），读时长/帧率/旋转/HDR/拍摄时间/GPS | `work/media.json` |
 | `proxy` | 720p、30fps、SDR、带音轨的代理文件 + 缩略图 | `work/derived/<id>/proxy.mp4` |
 | `analyze` | 静音、黑屏、场景切换、模糊检测，按场景抽关键帧 | `analysis.json`、`kf_*.jpg` |
-| `transcribe` | Whisper 转录；丢弃落在静音里的“幻觉”句子 | `transcript.json` |
-| `summarize` | Claude 看关键帧 + 转录 + 检测结果 → 标题、摘要、保留/丢弃、入出点、理由 | `summary.json` |
-| `roughcut` | 按拍摄时间排序，按“同一天 + 30 公里内”分组，组间留黑场，组首尾淡入淡出 | `work/project.json`、`work/roughcut.md` |
-| `render` | 每段单独渲染并缓存 → 拼接 → 两遍 loudnorm（-16 LUFS）；转录映射成字幕 | `work/out/*.mp4`、`*.srt` |
+| `transcribe` | Whisper 转录，自动识别中文/英文（中英夹杂也行）；丢弃落在静音里的“幻觉”句子 | `transcript.json`、`work/transcript.md` |
+| `transcript` | 把所有视频的语音按拍摄时间整理成文字稿 | `work/transcript.md` |
+| `summarize` | Claude 看关键帧 + 转录 + 检测结果 → 标题、摘要、地点、保留/丢弃、入出点、理由 | `summary.json` |
+| `roughcut` | 按拍摄时间排序，按“同一天 + 30 公里内”分组；自动加片头标题卡和“第 N 天 · 地点”标题卡 | `work/project.json`、`work/roughcut.md` |
+| `render` | 每段单独渲染并缓存 → 拼接 → 两遍 loudnorm（-16 LUFS）；标题卡和画面文字；转录映射成字幕 | `work/out/*.mp4`、`*.srt` |
+| `update [目录]` | 加入新素材：重新扫描已知目录（或新目录），只处理新增视频，**不改** `project.json` | 同上 |
 
 每一步都会跳过已经做完的部分，加 `--force` 重做。`all` 等于依次跑 scan → roughcut。
+
+- 转录语言默认自动检测；只有一种语言时可以指定，例如 `transcribe --language en`
+- `roughcut --no-titles` 不加标题卡；`roughcut --captions` 把 AI 标题作为文字叠在每段开头
 
 ## 用命令行“剪辑”
 
@@ -56,6 +63,10 @@ uv run --with mlx-whisper vidcut.py transcribe --model models/whisper-small-mlx
 - 改裁剪：改 `in_ms` / `out_ms`（毫秒，相对原视频）
 - 调音量：`volume_db`
 - 改间隔：增删 `{"type": "gap", "duration_ms": 1000}`
+- 标题卡：`{"type": "title", "text": "第 1 天 · 东京", "subtitle": "", "duration_ms": 2000, "background": "blur_next"}`
+  （`background` 为 `blur_next` 时用下一段画面模糊做背景，`black` 为黑底）
+- 画面文字：在 clip 里加 `"caption": {"text": "浅草寺", "position": "bottom", "start_ms": 0, "end_ms": 3000}`
+  （`position` 可选 `bottom` / `center` / `top`，时间相对这一段的开头）
 - 找回被丢弃的片段：从 `excluded` 里拿 `media_id`，照着别的 clip 写一条
 - 竖屏处理：`project.portrait_mode` 为 `blur_fill`（模糊背景）或其他值（黑边）
 
@@ -63,7 +74,7 @@ uv run --with mlx-whisper vidcut.py transcribe --model models/whisper-small-mlx
 
 ## 网页编辑器
 
-不想手改 JSON，可以用网页编辑同一个 `project.json`（只用 Python 标准库，无需安装）：
+不想手改 JSON，可以用网页编辑同一个 `project.json`（服务只用 Python 标准库；出片和扫描时通过 `uv` 调用 `vidcut.py`）：
 
 ```bash
 python3 web.py -w work
@@ -71,13 +82,37 @@ python3 web.py -w work
 
 浏览器打开 http://127.0.0.1:8765 ，可以：
 
-- 拖动 ⋮⋮ 或用 ↑↓ 调整顺序；改入点、出点、音量、淡入淡出；插入/删除间隔；排除片段或从“已排除”加回
-- 点击卡片在右侧预览，拖动播放器进度条，用“设为入点 / 设为出点”精确裁剪
-- “预览整条”：在浏览器里按顺序播放代理文件，实时应用裁剪、音量和淡入淡出，不需要渲染
-- 撤销/重做（Cmd/Ctrl+Z）、保存（Cmd/Ctrl+S）；保存前会校验，旧版本自动备份到 `work/history/`
-- “出草稿 / 出 1080p 成片”：在后台调用 `vidcut.py render`，完成后可直接播放和下载
+- **顺序**：拖动 ⋮⋮ 或用 ↑↓；“按拍摄时间排序”一键恢复时间顺序（片头固定在最前，标题卡和间隔跟着后面那段走）
+- **裁剪**：改入点、出点、音量、淡入淡出；点击卡片在右侧预览，用“设为入点 / 设为出点”精确裁剪
+- **增删换**：✕ 把片段移回素材库；“素材库”列出所有没用到的视频，点“加入”按拍摄时间插回；
+  “替换”换成另一段素材，保留位置、音量和淡入淡出
+- **新素材**：“扫描新素材”在后台跑 `vidcut.py update`（转录、摘要都会做），完成后出现在素材库
+- **标题**：“+ 标题卡”插入整屏标题；每段可加“画面文字”（位置、起止时间可调，默认填入 AI 标题）
+- **语音**：每段卡片逐句列出语音原文（中文就显示中文，英文就显示英文），入出点范围外的句子标为已裁掉；
+  点一句跳到那个位置；预览时播放器按时间显示当前这句
+- **预览**：“预览整条”在浏览器里实时播放，包括裁剪、音量、淡入淡出、间隔、标题卡和画面文字
+- **保存**：撤销/重做（Cmd/Ctrl+Z）、保存（Cmd/Ctrl+S）；保存前会校验，旧版本自动备份到 `work/history/`
+- **出片**：“出草稿 / 出 1080p 成片”在后台调用 `vidcut.py render`，完成后可直接播放和下载
+
+加入新素材时的语音识别：Apple Silicon 上默认用 mlx-whisper，并优先使用 `models/` 下已下载的模型；
+可用 `--asr none` 关闭，或 `--asr-model` 指定模型。
 
 服务默认只监听本机（127.0.0.1）。网页和命令行改的是同一个文件，不要两边同时改。
+
+### PHP 版
+
+`index.php` 是同一个编辑器的 PHP 实现（PHP 8.1+，页面、接口、功能都与 `web.py` 相同），二选一即可：
+
+```bash
+PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8765 index.php
+VIDCUT_WORK=work_real PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8765 index.php   # 其他工作目录
+```
+
+- `PHP_CLI_SERVER_WORKERS=4` 让 PHP 自带服务器同时处理多个请求（播放视频时还能保存、轮询进度），不要省略
+- 也可以放到 Apache 下：`.htaccess` 会把所有请求交给 `index.php`，工作目录里的文件不会被直接访问；
+  用 `SetEnv VIDCUT_WORK ...` 指定工作目录。需要开启 mod_rewrite，且网站进程对工作目录有写权限
+- 其他环境变量：`VIDCUT_ASR`（auto / mlx-whisper / faster-whisper / none）、`VIDCUT_ASR_MODEL`、`VIDCUT_UV`（uv 的路径）
+- PHP 没有常驻线程，渲染和扫描新素材作为独立后台进程运行，状态和日志写在 `<工作目录>/.job/`
 
 ## 演示了方案里的哪些点
 
@@ -85,11 +120,10 @@ python3 web.py -w work
 - 统一格式：混合帧率（25/30）、竖屏、无音轨视频、HDR 转 SDR（需要 ffmpeg 带 zscale）
 - AI 初剪：误触片段（全程黑屏、不足 2 秒）自动排除，开头黑屏和首尾静音自动裁掉，每条建议都写明理由
 - 视觉 + 语音一起做摘要；Claude 不可用时自动退回规则，整批不会因此失败
-- 多轨道、整数毫秒的 schema v2；分段渲染缓存；响度标准化；字幕
+- 多轨道、整数毫秒的 schema v2；分段渲染缓存；响度标准化；字幕；标题卡和画面文字
 
 ## 还没做
 
-- Web UI 和实时预览（现在用 `render --draft` 代替）
-- 转场、背景音乐、标题、照片
+- 转场、背景音乐、照片
 - OTIO 导出、任务队列、断点续传
 - 模糊检测只是粗略的相对阈值，抖动检测还没做
