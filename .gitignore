@@ -1,0 +1,8 @@
+# 生成物：样例视频由 make_samples.sh 生成，模型可重新下载，工作目录可重跑
+showcase/samples/
+showcase/models/
+showcase/work*/
+
+__pycache__/
+*.pyc
+.DS_Store
