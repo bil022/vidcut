@@ -121,8 +121,19 @@ docker compose up web
 
 ## 5. 更新到最新版本
 
-GitHub 上有新提交时重新构建镜像。`update.ps1`（Windows）/ `update.sh`（macOS、Linux）会检查最新提交，
-已是最新就什么都不做；否则下载那个版本的源码并构建（不需要安装 git）。
+**一般不用做任何事**：容器每次启动都会检查 GitHub 上的最新提交，有新版本就自动下载脚本
+（`vidcut.py`、`web.py`、网页等）到缓存卷 `/cache/app`，然后用新脚本运行，**不需要重新构建镜像**。
+所以只要在 Docker Desktop 里重新启动容器（Containers 里点 ■ 再点 ▶），就是最新版本。
+
+- 启动日志里会有 `[更新] 已更新到 xxxxxxx` 或 `[更新] 脚本已是最新`
+- 没有网络时照常用当前版本启动
+- 新脚本有语法错误时不会切换
+- 想立即更新而不重启：`docker run --rm -v vidcut-cache:/cache vidcut update-scripts`
+- 关闭自动更新：加环境变量 `VIDCUT_UPDATE=0`（会使用镜像里自带的脚本）
+- 请把 `/cache` 挂载成卷（如 `vidcut-cache`），更新下来的脚本会保留，下次启动不用再下载
+
+**只有依赖变了才需要重新构建镜像**（例如新版本要装新的 Python 包或改了 ffmpeg）。这时启动日志会提示
+“新版本改了依赖，需要重新构建镜像”，并继续使用当前版本。用下面的脚本重新构建（不需要安装 git）：
 
 Windows（PowerShell）：
 
@@ -130,16 +141,10 @@ Windows（PowerShell）：
 powershell -ExecutionPolicy Bypass -File update.ps1
 ```
 
-没有克隆仓库也可以，先下载这个脚本：
+没有克隆仓库也可以先下载这个脚本：
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/bil022/vidcut/main/showcase/update.ps1 -OutFile update.ps1
-```
-
-每天凌晨 3 点自动检查（在 `update.ps1` 所在目录运行一次）：
-
-```powershell
-schtasks /Create /SC DAILY /ST 03:00 /TN vidcut-update /TR "powershell -ExecutionPolicy Bypass -File `"$PWD\update.ps1`""
 ```
 
 macOS / Linux：
@@ -148,10 +153,5 @@ macOS / Linux：
 ./update.sh
 ```
 
-每天 3 点自动检查：`crontab -e` 加一行 `0 3 * * * /path/to/showcase/update.sh >> /tmp/vidcut-update.log 2>&1`
-
-说明：
-
-- 更新的是镜像。**正在运行的容器还是旧版本**：在 Docker Desktop 里删掉容器，用同样的设置重新 Run（工作目录和缓存卷里的数据都还在）
-- 当前镜像是哪个版本：`docker image inspect -f "{{ index .Config.Labels \"vidcut.rev\" }}" vidcut`
-- Windows 上的检查记录写在 `update.ps1` 旁边的 `update.log`
+重新构建后要删掉旧容器、用同样的设置重新 Run（工作目录和缓存卷里的数据都还在）。
+当前镜像版本：`docker image inspect -f "{{ index .Config.Labels \"vidcut.rev\" }}" vidcut`

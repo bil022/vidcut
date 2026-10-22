@@ -8,9 +8,23 @@
 #   web               只启动网页编辑器（容器内 0.0.0.0:8766）
 #   make <目标> ...    运行 Makefile 里的目标（工作目录固定为 /work）
 #   help              显示用法
+#   update-scripts    立即从 GitHub 获取最新脚本
 #   其他              交给 vidcut.py，例如 auto /videos --name "日本之旅"、render --draft
 set -e
-cd /app
+
+# 启动时从 GitHub 获取最新脚本（不用重新构建镜像）；VIDCUT_UPDATE=0 关闭。
+# 新脚本放在 /cache/app/current，找到就改用那里的入口脚本（只切换一次）。
+if [ -z "$VIDCUT_UPDATED" ]; then
+  if [ "${VIDCUT_UPDATE:-1}" = "1" ] || [ "$1" = "update-scripts" ]; then
+    python /app/selfupdate.py $( [ "$1" = "update-scripts" ] && echo --force ) || true
+  fi
+  [ "$1" = "update-scripts" ] && exit 0
+  if [ "${VIDCUT_UPDATE:-1}" = "1" ] && [ -f /cache/app/current/docker-entrypoint.sh ]; then
+    export VIDCUT_UPDATED=1
+    exec sh /cache/app/current/docker-entrypoint.sh "$@"
+  fi
+fi
+cd "$(dirname "$0")"  # 脚本所在目录：镜像里的 /app，或更新后的 /cache/app/current
 
 if [ $# -eq 0 ] || { [ $# -eq 1 ] && [ "$1" = "start" ] && [ -n "$VIDCUT_CMD" ]; }; then
   if [ -n "$VIDCUT_CMD" ]; then
@@ -65,6 +79,9 @@ vidcut Docker 镜像
     docker run --rm -v <素材目录>:/videos:ro -v <工作目录>:/work -v vidcut-cache:/cache vidcut render
 
   命令：start（默认）/ web / auto / update / render / transcript / make <目标> / help …
+
+  更新：每次启动自动从 GitHub 获取最新脚本（VIDCUT_UPDATE=0 关闭）；立即更新：vidcut update-scripts
+        依赖变了（Dockerfile 安装部分）才需要重新构建镜像：update.ps1 / update.sh
 
   其他环境变量：ANTHROPIC_API_KEY（可选，用 Claude 做摘要和翻译）
                VIDCUT_WHISPER_MODEL（语音识别模型，默认 small；更准：medium、large-v3-turbo）

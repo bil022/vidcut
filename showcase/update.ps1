@@ -1,4 +1,5 @@
-﻿# 从 GitHub 更新 vidcut 镜像：有新提交才重新构建（不需要安装 git）。
+﻿# 脚本更新不需要它（容器启动时会自动获取最新脚本）；只有依赖变了才需要重新构建镜像。
+# 从 GitHub 重新构建 vidcut 镜像：有新提交才重新构建（不需要安装 git）。
 #   powershell -ExecutionPolicy Bypass -File update.ps1          检查并更新
 #   powershell -ExecutionPolicy Bypass -File update.ps1 -Force   无论如何都重新构建
 # 每天凌晨 3 点自动运行（在 update.ps1 所在目录执行一次）：

@@ -21,7 +21,7 @@ RUN if [ "$WITH_TRANSLATE" = "1" ]; then \
     fi
 
 WORKDIR /app
-COPY vidcut.py web.py Makefile make_samples.sh docker-entrypoint.sh ./
+COPY vidcut.py web.py Makefile make_samples.sh docker-entrypoint.sh selfupdate.py Dockerfile ./
 COPY web ./web
 RUN chmod +x docker-entrypoint.sh make_samples.sh
 
