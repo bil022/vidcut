@@ -118,3 +118,40 @@ docker compose up web
 - **工作目录不要在 Docker 和本机之间混用**：容器里记录的素材路径是 `/videos/...`，本机记录的是本机路径；各用各的工作目录
 - **网页里“扫描新素材”** 填的是容器里的路径（例如 `/videos/新的子目录`），不是 Windows 路径
 - **Windows 换行**：仓库里的 `.gitattributes` 保证 `.sh` 和 `Makefile` 用 LF 换行，否则容器里无法运行
+
+## 5. 更新到最新版本
+
+GitHub 上有新提交时重新构建镜像。`update.ps1`（Windows）/ `update.sh`（macOS、Linux）会检查最新提交，
+已是最新就什么都不做；否则下载那个版本的源码并构建（不需要安装 git）。
+
+Windows（PowerShell）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File update.ps1
+```
+
+没有克隆仓库也可以，先下载这个脚本：
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/bil022/vidcut/main/showcase/update.ps1 -OutFile update.ps1
+```
+
+每天凌晨 3 点自动检查（在 `update.ps1` 所在目录运行一次）：
+
+```powershell
+schtasks /Create /SC DAILY /ST 03:00 /TN vidcut-update /TR "powershell -ExecutionPolicy Bypass -File `"$PWD\update.ps1`""
+```
+
+macOS / Linux：
+
+```bash
+./update.sh
+```
+
+每天 3 点自动检查：`crontab -e` 加一行 `0 3 * * * /path/to/showcase/update.sh >> /tmp/vidcut-update.log 2>&1`
+
+说明：
+
+- 更新的是镜像。**正在运行的容器还是旧版本**：在 Docker Desktop 里删掉容器，用同样的设置重新 Run（工作目录和缓存卷里的数据都还在）
+- 当前镜像是哪个版本：`docker image inspect -f "{{ index .Config.Labels \"vidcut.rev\" }}" vidcut`
+- Windows 上的检查记录写在 `update.ps1` 旁边的 `update.log`

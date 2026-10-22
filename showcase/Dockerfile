@@ -37,5 +37,9 @@ ENV HOME=/cache \
 # /videos：素材目录（建议只读挂载）  /work：工作目录（项目、设置、输出视频）  /cache：模型缓存
 VOLUME ["/work", "/cache"]
 EXPOSE 8766
+# 构建时的 git 提交号；update.ps1 / update.sh 用它判断镜像是否已是最新（放在最后，不影响前面层的缓存）
+ARG VIDCUT_REV=dev
+LABEL vidcut.rev=$VIDCUT_REV
+ENV VIDCUT_REV=$VIDCUT_REV
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["start"]
