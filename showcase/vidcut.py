@@ -160,11 +160,68 @@ def load_settings(ws: Workspace, name: str | None = None) -> dict:
     if s != cur:
         save_json(path, s)
         log(f"设置文件 → {path}（可直接编辑后重新运行）")
-    tr = s["transitions"]
-    for k in ("type", "group_type", "part_type"):
-        if tr[k] not in TRANSITIONS:
-            sys.exit(f"settings.json: transitions.{tr[k]} 不是可用的转场，可选：{', '.join(sorted(TRANSITIONS))}")
+    if errs := check_settings(s):
+        sys.exit("settings.json 有问题：\n  " + "\n  ".join(errs))
     return s
+
+
+def check_settings(s: dict) -> list[str]:
+    """检查 settings.json 的类型和取值范围；返回问题列表（网页保存设置时也用它校验）。"""
+    errs = []
+
+    def num(path: str, lo: float, hi: float, integer: bool = False):
+        sec, key = path.split(".")
+        v = s.get(sec, {}).get(key)
+        ok = isinstance(v, int) if integer else isinstance(v, (int, float))
+        if isinstance(v, bool) or not ok or not lo <= v <= hi:
+            errs.append(f"{path} 必须是 {lo}–{hi} 之间的{'整数' if integer else '数字'}（现在是 {v!r}）")
+
+    def flag(path: str):
+        sec, key = path.split(".")
+        if not isinstance(s.get(sec, {}).get(key), bool):
+            errs.append(f"{path} 必须是 true 或 false")
+
+    def choice(path: str, options):
+        sec, key = path.split(".")
+        if s.get(sec, {}).get(key) not in options:
+            errs.append(f"{path} 只能是 {' / '.join(sorted(options))}")
+
+    if not isinstance(s.get("name"), str) or not s["name"].strip():
+        errs.append("name（片名）不能为空")
+    for path in ("output.resolution", "output.preview_resolution"):
+        v = s["output"].get(path.split(".")[1])
+        if not (isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) and 16 <= x <= 8192 and x % 2 == 0 for x in v)):
+            errs.append(f"{path} 必须是两个偶数，例如 [1920, 1080]")
+    num("output.fps", 1, 120, integer=True)
+    choice("output.portrait_mode", {"blur_fill", "pad"})
+    for k in ("threshold_s", "head_s", "tail_s"):
+        num(f"long_clips.{k}", 0, 3600)
+    for k in ("type", "group_type", "part_type"):
+        choice(f"transitions.{k}", TRANSITIONS)
+    for k in ("duration_s", "group_duration_s", "part_duration_s"):
+        num(f"transitions.{k}", 0.1, 3)
+    for k in ("opening", "groups", "captions"):
+        flag(f"titles.{k}")
+    num("titles.group_km", 0, 20000)
+    flag("audio.auto_volume")
+    for k in ("speech_lufs", "ambient_lufs", "final_lufs"):
+        num(f"audio.{k}", -40, -5)
+    num("audio.ambient_max_boost_db", 0, 30)
+    num("audio.max_gain_db", 0, 30)
+    flag("subtitles.burn_in")
+    flag("subtitles.translate")
+    choice("subtitles.show", {"both", "original", "translation"})
+    lang = s["speech"].get("language")
+    if lang is not None and not (isinstance(lang, str) and re.fullmatch(r"auto|[a-z]{2,3}", lang)):
+        errs.append("speech.language 只能是 auto 或语言代码，例如 zh、en")
+    return errs
+
+
+def cmd_settings(ws: Workspace, args) -> None:
+    """生成（或补全）并校验 settings.json。"""
+    ws.root.mkdir(parents=True, exist_ok=True)
+    load_settings(ws)
+    log(f"{ws.root / 'settings.json'} 有效")
 
 
 def apple_silicon() -> bool:
@@ -1705,6 +1762,7 @@ def main() -> None:
     roughcut_args(p)
     p = add("render", cmd_render, "渲染成片")
     p.add_argument("--draft", action="store_true", help="用代理文件快速出预览视频（preview_resolution）")
+    add("settings", cmd_settings, "生成并检查 settings.json")
     p = add("auto", cmd_auto, "全自动：素材目录 → 预览视频")
     p.add_argument("folder", nargs="?", help="素材目录；不填则重新扫描以前扫过的目录")
     p.add_argument("--name", help="片名（会写进 settings.json）")

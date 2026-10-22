@@ -109,6 +109,31 @@ pre#jobLog { font-size: 11px; max-height: 160px; overflow: auto; background: var
 #folder { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--bg);
   border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; }
 select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; }
+/* 开始页（还没有剪辑项目时） */
+.startview { max-width: 640px; margin: 48px auto; padding: 0 16px; }
+.startview .panel { display: flex; flex-direction: column; gap: 12px; }
+.startview h1 { font-size: 22px; margin: 0 0 4px; }
+.startview label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.startview input[type=text] { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; }
+.startview pre { font-size: 11px; max-height: 260px; overflow: auto; background: var(--bg); padding: 8px; border-radius: 6px;
+  white-space: pre-wrap; margin: 0; }
+/* 设置面板 */
+details.panel > summary { cursor: pointer; font-weight: 600; }
+details.panel[open] > summary { margin-bottom: 8px; }
+.stgroup { font-size: 12px; font-weight: 600; color: var(--muted); margin: 10px 0 4px; }
+.stgrid { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: center; font-size: 12px; }
+.stgrid input[type=number], .stgrid input[type=text], .stgrid select { font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 5px; padding: 1px 4px; }
+.stgrid input[type=number] { width: 72px; }
+.stgrid input[type=text] { width: 160px; }
+.stgrid .res input { width: 60px; }
+#stMsg { font-size: 12px; white-space: pre-line; }
+#stMsg.err { color: var(--danger); }
+/* 输出文件 */
+#outputs { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+#outputs li { display: flex; gap: 6px; align-items: center; }
+#outputs .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -121,6 +146,18 @@ select { font: inherit; color: var(--text); background: var(--panel); border: 1p
   <span id="saveState" class="muted"></span>
   <button id="save" class="primary" title="Cmd/Ctrl+S">保存</button>
 </header>
+<div id="startView" class="startview" hidden>
+  <div class="panel">
+    <h1>vidcut · 开始</h1>
+    <div class="muted small">这个工作目录里还没有剪辑项目。填写素材目录后，会自动完成：扫描 → 语音识别 → 翻译 → AI 初剪 → 预览视频，完成后进入编辑页面。第一次需要下载模型，可能要几分钟到几十分钟。</div>
+    <label class="field">素材目录（服务器上的路径；Docker 里一般是 /videos）
+      <input type="text" id="startFolder" placeholder="例如 /Users/me/Movies/日本 或 /videos"></label>
+    <label class="field">片名 <input type="text" id="startName" placeholder="例如 日本之旅"></label>
+    <label class="muted small"><input type="checkbox" id="startFinal"> 同时渲染 1080p 成片（更慢）</label>
+    <div class="row"><button id="startBtn" class="primary">开始自动处理</button><span id="startMsg" class="muted small"></span></div>
+    <pre id="startLog" hidden></pre>
+  </div>
+</div>
 <main>
   <section>
     <div id="errors"></div>
@@ -175,6 +212,23 @@ select { font: inherit; color: var(--text); background: var(--panel); border: 1p
       <pre id="jobLog"></pre>
       <div id="jobOut" class="row"></div>
     </div>
+    <div class="panel">
+      <div class="row" style="margin-top:0"><b>输出文件</b><span class="spacer"></span>
+        <button class="icon" id="outRefresh" title="刷新">↻</button></div>
+      <ul id="outputs"></ul>
+    </div>
+    <details class="panel" id="settingsPanel">
+      <summary>自动设置（settings.json）</summary>
+      <div class="muted small">改完点“保存并重新生成”：按新设置重新生成剪辑和预览视频。这会覆盖上面手动做的修改（旧版本自动备份到 history/）。</div>
+      <div id="stForm"></div>
+      <div class="row">
+        <label class="muted small"><input type="checkbox" id="stFinal"> 同时出 1080p 成片</label>
+        <span class="spacer"></span>
+        <button id="stSave">只保存</button>
+        <button id="stRebuild" class="primary">保存并重新生成</button>
+      </div>
+      <div id="stMsg"></div>
+    </details>
   </aside>
 </main>
 <script>
@@ -221,12 +275,155 @@ async function fetchState() { S = await (await fetch('api/state')).json(); }
 
 async function load() {
   await fetchState();
+  if (!S.project) return showStart();
+  useProject();
+  loadOutputs();
+  if (S.job.status === 'running') pollJob();
+  else if (S.job.output) showOutput(S.job);
+}
+
+function useProject() {
   P = S.project;
   P.excluded = P.excluded || [];
   saved = JSON.stringify(P);
+  undoStack = [];
+  redoStack = [];
+  selectedId = replacingId = editingSubsId = null;
+  $('#startView').hidden = true;
+  document.querySelector('header').hidden = false;
+  document.querySelector('main').hidden = false;
   render();
-  if (S.job.status === 'running') pollJob();
-  else if (S.job.kind === 'render' && S.job.output) showOutput(S.job);
+}
+
+// ───────── 开始页：还没有剪辑项目时，在网页上启动全自动处理 ─────────
+function showStart() {
+  document.querySelector('header').hidden = true;
+  document.querySelector('main').hidden = true;
+  $('#startView').hidden = false;
+  $('#startFolder').value = S.default_folder || S.sources?.[0] || '';
+  if (S.job.status === 'running') pollStart();
+}
+async function startAuto() {
+  const body = { folder: $('#startFolder').value.trim(), name: $('#startName').value.trim(), final: $('#startFinal').checked };
+  const r = await fetch('api/auto', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) { $('#startMsg').textContent = (await r.json()).error; return; }
+  pollStart();
+}
+async function pollStart() {
+  const r = await (await fetch('api/job')).json();
+  const log = $('#startLog');
+  log.hidden = false;
+  log.textContent = r.log.slice(-30).join('\n') || '开始…';
+  log.scrollTop = log.scrollHeight;
+  $('#startBtn').disabled = r.status === 'running';
+  if (r.status === 'running') { $('#startMsg').textContent = '处理中…'; setTimeout(pollStart, 1500); return; }
+  if (r.status === 'failed') { $('#startMsg').textContent = '处理失败，见下方日志'; return; }
+  await fetchState();
+  if (S.project) { useProject(); loadOutputs(); showOutput(r); }
+}
+
+// ───────── 输出文件：播放、下载 ─────────
+const fmtSize = (n) => (n > 1 << 20 ? `${(n / (1 << 20)).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`);
+async function loadOutputs() {
+  const files = await (await fetch('api/outputs')).json();
+  const list = $('#outputs');
+  list.replaceChildren(...files.map((f) => {
+    const isVideo = f.name.endsWith('.mp4');
+    const when = new Date(f.mtime * 1000).toLocaleString();
+    return h('li', {},
+      isVideo ? h('button', { class: 'icon', title: '在播放器里看', onclick: () => playOutput(f.url) }, '▶') : h('span', { class: 'icon' }, '　'),
+      h('span', { class: 'grow', title: `${f.name} · ${when}` }, f.name),
+      h('span', { class: 'muted' }, fmtSize(f.size)),
+      h('a', { href: `${f.url}?download=1`, download: f.name, title: '下载' }, '下载'));
+  }));
+  if (!files.length) list.append(h('li', { class: 'muted' }, '还没有输出，点“出预览视频”或“出 1080p 成片”'));
+}
+function playOutput(url) {
+  stop(); mode = 'output'; current = null;
+  video.src = url + '?t=' + Date.now();
+  setGain(1); updateNow(); updateMarkButtons(); ensureAudio(); video.play();
+}
+
+// ───────── 自动设置（settings.json）表单 ─────────
+const TR_OPTS = () => TRANSITIONS;
+const SETTINGS_FORM = [
+  ['基本', [['name', '片名', 'text'], ['output.resolution', '成片分辨率', 'res'], ['output.preview_resolution', '预览分辨率', 'res'],
+    ['output.fps', '帧率', 'int'], ['output.portrait_mode', '竖屏处理', [['blur_fill', '模糊背景'], ['pad', '黑边']]]]],
+  ['长视频', [['long_clips.threshold_s', '超过多少秒算长视频（0 = 不处理）', 'num'], ['long_clips.head_s', '保留开头秒数', 'num'],
+    ['long_clips.tail_s', '保留结尾秒数', 'num']]],
+  ['转场', [['transitions.type', '片段之间', 'tr'], ['transitions.duration_s', '　时长（秒）', 'num'],
+    ['transitions.group_type', '换天 / 换地点', 'tr'], ['transitions.group_duration_s', '　时长（秒）', 'num'],
+    ['transitions.part_type', '长视频开头与结尾之间', 'tr'], ['transitions.part_duration_s', '　时长（秒）', 'num']]],
+  ['标题', [['titles.opening', '片头标题卡', 'bool'], ['titles.groups', '每天 / 每个地点的标题卡', 'bool'],
+    ['titles.captions', '把 AI 标题叠在画面上', 'bool'], ['titles.group_km', '同一地点的范围（公里）', 'num']]],
+  ['声音', [['audio.auto_volume', '自动调整每段音量', 'bool'], ['audio.speech_lufs', '人声目标响度（LUFS）', 'num'],
+    ['audio.ambient_lufs', '环境声目标响度（LUFS）', 'num'], ['audio.max_gain_db', '每段最多调整（dB）', 'num'],
+    ['audio.final_lufs', '整片响度（LUFS）', 'num']]],
+  ['字幕与语音', [['subtitles.burn_in', '字幕烧进视频', 'bool'], ['subtitles.translate', '自动翻译（中↔英）', 'bool'],
+    ['subtitles.show', '显示', [['both', '原文 + 译文'], ['original', '只显示原文'], ['translation', '只显示译文']]],
+    ['speech.language', '语音语言', [['auto', '自动识别'], ['zh', '中文'], ['en', '英文']]]]],
+];
+let ST = null;
+const getPath = (o, p) => p.split('.').reduce((x, k) => x?.[k], o);
+function setPath(o, p, v) { const ks = p.split('.'); const last = ks.pop(); ks.reduce((x, k) => (x[k] ??= {}), o)[last] = v; }
+
+async function loadSettings() {
+  const r = await fetch('api/settings');
+  const data = await r.json();
+  if (!data.settings) { setStMsg(data.error || '无法读取设置', true); return; }
+  ST = data.settings;
+  renderSettings();
+}
+function renderSettings() {
+  const form = $('#stForm');
+  form.replaceChildren();
+  for (const [group, fields] of SETTINGS_FORM) {
+    form.append(h('div', { class: 'stgroup' }, group));
+    const grid = h('div', { class: 'stgrid' });
+    for (const [path, label, type] of fields) {
+      const v = getPath(ST, path);
+      let input;
+      if (type === 'bool') {
+        input = h('input', { type: 'checkbox' });
+        input.checked = !!v;
+        input.onchange = () => setPath(ST, path, input.checked);
+      } else if (type === 'res') {
+        const w = h('input', { type: 'number', step: '2', min: '16', value: v?.[0] });
+        const hh = h('input', { type: 'number', step: '2', min: '16', value: v?.[1] });
+        const upd = () => setPath(ST, path, [parseInt(w.value, 10), parseInt(hh.value, 10)]);
+        w.onchange = hh.onchange = upd;
+        input = h('span', { class: 'res' }, w, ' × ', hh);
+      } else if (type === 'num' || type === 'int') {
+        input = h('input', { type: 'number', step: type === 'int' ? '1' : 'any', value: v });
+        input.onchange = () => setPath(ST, path, type === 'int' ? parseInt(input.value, 10) : parseFloat(input.value));
+      } else if (type === 'text') {
+        input = h('input', { type: 'text', value: v || '' });
+        input.onchange = () => setPath(ST, path, input.value.trim());
+      } else {
+        const opts = type === 'tr' ? TR_OPTS() : type;
+        input = h('select', {}, ...opts.map(([o, t]) => h('option', { value: o }, t)));
+        input.value = v ?? opts[0][0];
+        input.onchange = () => setPath(ST, path, input.value);
+      }
+      grid.append(h('span', {}, label), input);
+    }
+    form.append(grid);
+  }
+}
+function setStMsg(text, err) { const m = $('#stMsg'); m.textContent = text; m.className = err ? 'err' : 'muted'; }
+async function saveSettings() {
+  const r = await fetch('api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ST) });
+  const data = await r.json();
+  if (!r.ok) { setStMsg('设置有问题：\n' + (data.errors || [data.error]).join('\n'), true); return false; }
+  setStMsg(`已保存 ${new Date().toLocaleTimeString()}`);
+  return true;
+}
+async function saveAndRebuild() {
+  const lost = dirty() ? '网页上还有未保存的修改，也会丢失。' : '';
+  if (!confirm(`按新设置重新生成剪辑和预览视频？\n手动做的修改会被覆盖（旧版本自动备份到 history/）。${lost}`)) return;
+  if (!(await saveSettings())) return;
+  setStMsg('已保存，开始重新生成…');
+  startJob('api/auto', { rebuild: true, final: $('#stFinal').checked });
 }
 
 function mutate(fn) {
@@ -245,7 +442,7 @@ async function save() {
   const data = await r.json();
   if (!r.ok) { $('#errors').textContent = '保存失败：\n' + (data.errors || [data.error]).join('\n'); return false; }
   saved = JSON.stringify(P);
-  $('#saveState').dataset.at = data.saved_at.slice(11);
+  $('#saveState').dataset.at = new Date().toLocaleTimeString();  // 用浏览器的本地时间（PHP 服务器可能是 UTC）
   render();
   return true;
 }
@@ -910,11 +1107,17 @@ async function pollJob() {
   log.textContent = r.log.slice(-14).join('\n') || '开始…';
   log.scrollTop = log.scrollHeight;
   const running = r.status === 'running';
-  for (const id of ['#renderDraft', '#renderFinal', '#update']) $(id).disabled = running;
-  const what = r.kind === 'update' ? '扫描新素材' : '渲染';
+  for (const id of ['#renderDraft', '#renderFinal', '#update', '#stSave', '#stRebuild']) $(id).disabled = running;
+  const what = { update: '扫描新素材', auto: '重新生成' }[r.kind] || '渲染';
   if (running) { $('#jobOut').textContent = `${what}中…`; setTimeout(pollJob, 1000); return; }
   if (r.status === 'failed') { $('#jobOut').textContent = `${what}失败，见上方日志`; return; }
-  if (r.kind === 'update') {
+  loadOutputs();
+  if (r.kind === 'auto') {
+    await fetchState();  // 剪辑已按设置重新生成：换成新的项目
+    useProject();
+    setStMsg('已按新设置重新生成');
+    showOutput(r);
+  } else if (r.kind === 'update') {
     const before = new Set(Object.keys(S.media));
     await fetchState();  // 只刷新素材信息，正在编辑的项目保持不变
     const added = Object.keys(S.media).filter((mid) => !before.has(mid)).length;
@@ -927,11 +1130,10 @@ async function pollJob() {
 }
 function showOutput(r) {
   if (!r.output) return;
-  const url = r.output + '?t=' + Date.now();
+  const isPreview = r.output.includes('_preview');
   $('#jobOut').replaceChildren(
-    h('button', { class: 'primary', onclick: () => { stop(); mode = 'output'; current = null; video.src = url; setGain(1); updateNow(); updateMarkButtons(); ensureAudio(); video.play(); } },
-      `▶ 播放${r.draft ? '预览视频' : '成片'}`),
-    h('a', { href: url, download: '' }, '下载 MP4'),
+    h('button', { class: 'primary', onclick: () => playOutput(r.output) }, `▶ 播放${isPreview ? '预览视频' : '成片'}`),
+    h('a', { href: `${r.output}?download=1`, download: '' }, '下载'),
   );
 }
 
@@ -953,6 +1155,11 @@ $('#setOut').onclick = () => setMark('out');
 $('#renderDraft').onclick = () => startRender(true);
 $('#renderFinal').onclick = () => startRender(false);
 $('#update').onclick = startUpdate;
+$('#startBtn').onclick = startAuto;
+$('#outRefresh').onclick = loadOutputs;
+$('#stSave').onclick = saveSettings;
+$('#stRebuild').onclick = saveAndRebuild;
+$('#settingsPanel').addEventListener('toggle', () => { if ($('#settingsPanel').open && !ST) loadSettings(); });
 document.addEventListener('keydown', (e) => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }

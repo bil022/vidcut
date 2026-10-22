@@ -59,7 +59,7 @@ function media(): array
     return (load_json("$WORK/media.json") ?? [])['media'] ?? [];
 }
 
-function send_file(string $path, bool $cache): void
+function send_file(string $path, bool $cache, bool $download = false): void
 {
     if (!is_file($path)) {
         send_json(['error' => 'not found'], 404);
@@ -89,6 +89,9 @@ function send_file(string $path, bool $cache): void
     header('Cache-Control: ' . ($cache ? 'max-age=3600' : 'no-cache'));
     if ($status === 206) {
         header("Content-Range: bytes $start-$end/$size");
+    }
+    if ($download) {
+        header("Content-Disposition: attachment; filename*=UTF-8''" . rawurlencode(basename($path)));
     }
     while (ob_get_level()) {
         ob_end_clean();
@@ -125,7 +128,63 @@ function state(): array
     }
     $data = load_json("$WORK/media.json") ?? [];
     return ['work' => $WORK, 'project' => load_json("$WORK/project.json"),
-            'media' => (object)$media, 'sources' => $data['sources'] ?? [], 'job' => job_state()];
+            'media' => (object)$media, 'sources' => $data['sources'] ?? [], 'job' => job_state(),
+            'default_folder' => getenv('VIDCUT_DEFAULT_FOLDER') ?: ''];
+}
+
+function outputs(): array
+{
+    global $WORK;
+    $files = array_merge(glob("$WORK/out/*.mp4") ?: [], glob("$WORK/out/*.srt") ?: []);
+    usort($files, fn($a, $b) => filemtime($b) <=> filemtime($a));
+    return array_map(fn($f) => ['name' => basename($f), 'size' => filesize($f), 'mtime' => filemtime($f),
+                                'url' => 'out/' . rawurlencode(basename($f))], $files);
+}
+
+function backup(string $path, string $prefix): void
+{
+    global $WORK;
+    if (is_file($path)) {
+        @mkdir("$WORK/history", 0777, true);
+        $t = microtime(true);
+        copy($path, "$WORK/history/$prefix-" . date('Ymd-His', (int)$t) . sprintf('-%06d', ($t - floor($t)) * 1e6) . '.json');
+    }
+}
+
+/** 同步运行 vidcut.py（读取/校验设置用，很快）；返回 [退出码, 输出] */
+function run_vidcut(array $args): array
+{
+    global $HERE;
+    $cmd = 'cd ' . escapeshellarg($HERE) . ' && export PATH=' . escapeshellarg(job_path()) . '; '
+        . implode(' ', array_map('escapeshellarg', array_merge(vidcut_cmd(), $args))) . ' 2>&1';
+    exec($cmd, $out, $code);
+    return [$code, implode("\n", $out)];
+}
+
+function settings_get(): array
+{
+    global $WORK;
+    @mkdir($WORK, 0777, true);
+    [$code, $out] = run_vidcut(['settings']);
+    return [load_json("$WORK/settings.json"), $code === 0 ? '' : $out];
+}
+
+/** 写入后用 vidcut.py settings 校验；不通过就恢复原文件 */
+function settings_put(string $raw): array
+{
+    global $WORK;
+    $file = "$WORK/settings.json";
+    $old = is_file($file) ? file_get_contents($file) : null;
+    backup($file, 'settings');
+    file_put_contents($file, json_encode(json_decode($raw), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    [$code, $out] = run_vidcut(['settings']);
+    if ($code === 0) {
+        return [];
+    }
+    $old === null ? unlink($file) : file_put_contents($file, $old);
+    $lines = array_filter(array_map('trim', explode("\n", $out)),
+        fn($l) => $l !== '' && !str_contains($l, '有问题') && !str_contains($l, 'punycode') && !str_contains($l, 'trace-deprecation'));
+    return array_values($lines) ?: ['设置无效'];
 }
 
 
@@ -273,12 +332,7 @@ function save_project(string $raw): string
     $file = "$WORK/project.json";
     $lock = fopen("$WORK/.project.lock", 'c');
     flock($lock, LOCK_EX);
-    if (is_file($file)) {
-        @mkdir("$WORK/history");
-        $t = microtime(true);
-        $stamp = date('Ymd-His', (int)$t) . sprintf('-%06d', ($t - floor($t)) * 1e6);
-        copy($file, "$WORK/history/project-$stamp.json");
-    }
+    backup($file, 'project');
     file_put_contents("$file.tmp", json_encode($obj, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
     rename("$file.tmp", $file);
     flock($lock, LOCK_UN);
@@ -385,6 +439,17 @@ function asr_model(): ?string
     return $local[0] ?? null;
 }
 
+function job_home(): string
+{
+    return getenv('HOME') ?: (function_exists('posix_getpwuid') ? posix_getpwuid(posix_geteuid())['dir'] : '/tmp');
+}
+
+/** Apache 等环境的 PATH 很短，补上常见的 ffmpeg / uv 位置 */
+function job_path(): string
+{
+    return implode(':', array_filter([getenv('PATH'), '/opt/homebrew/bin', '/usr/local/bin', job_home() . '/.local/bin', '/usr/bin', '/bin']));
+}
+
 function start_job(string $kind, array $cmd, bool $draft = true): bool
 {
     global $HERE;
@@ -396,9 +461,8 @@ function start_job(string $kind, array $cmd, bool $draft = true): bool
             return false;
         }
         file_put_contents("$dir/job.log", '');
-        $home = getenv('HOME') ?: (function_exists('posix_getpwuid') ? posix_getpwuid(posix_geteuid())['dir'] : '/tmp');
-        // Apache 等环境的 PATH 很短，补上常见的 ffmpeg / uv 位置
-        $path = implode(':', array_filter([getenv('PATH'), '/opt/homebrew/bin', '/usr/local/bin', "$home/.local/bin", '/usr/bin', '/bin']));
+        $home = job_home();
+        $path = job_path();
         $inner = 'cd ' . escapeshellarg($HERE) . ' && export PATH=' . escapeshellarg($path) . ' HOME=' . escapeshellarg($home)
             . ' PYTHONUNBUFFERED=1; ' . implode(' ', array_map('escapeshellarg', $cmd))
             . '; echo "__VIDCUT_EXIT__ $?"';
@@ -423,11 +487,6 @@ if ($route === '' || $route === '/index.php') {
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 set_time_limit(0);
 
-if (!is_file("$WORK/project.json")) {
-    send_json(['error' => "$WORK 下没有 project.json，请先运行 vidcut.py roughcut"], 500);
-    return;
-}
-
 if ($method === 'GET' || $method === 'HEAD') {
     if ($route === '/' || $route === '/index.html') {
         header('Content-Type: text/html; charset=utf-8');
@@ -437,6 +496,11 @@ if ($method === 'GET' || $method === 'HEAD') {
         send_json(state());
     } elseif ($route === '/api/job') {
         send_json(job_state());
+    } elseif ($route === '/api/outputs') {
+        send_json(outputs());
+    } elseif ($route === '/api/settings') {
+        [$st, $err] = settings_get();
+        send_json(['settings' => $st, 'error' => $err], $st ? 200 : 500);
     } elseif (preg_match('#^/media/(m_[0-9a-f]{16})/(proxy\.mp4|thumb\.jpg|kf_\d+\.jpg)$#', $route, $m)) {
         if (!array_key_exists($m[1], media())) {
             send_json(['error' => 'unknown media'], 404);
@@ -444,9 +508,20 @@ if ($method === 'GET' || $method === 'HEAD') {
             send_file("$WORK/derived/{$m[1]}/{$m[2]}", true);
         }
     } elseif (preg_match('#^/out/([^/\\\\]+\.(?:mp4|srt))$#u', $route, $m)) {
-        send_file("$WORK/out/{$m[1]}", false);
+        send_file("$WORK/out/{$m[1]}", false, isset($_GET['download']));
     } else {
         send_json(['error' => 'not found'], 404);
+    }
+} elseif ($method === 'PUT' && $route === '/api/settings') {
+    $raw = read_body();
+    if (!is_array(json_decode($raw, true))) {
+        send_json(['errors' => ['设置必须是 JSON 对象']], 400);
+    } elseif (job_state()['status'] === 'running') {
+        send_json(['errors' => ['后台任务进行中，请等它完成再改设置']], 409);
+    } elseif ($errs = settings_put($raw)) {
+        send_json(['errors' => $errs], 400);
+    } else {
+        send_json(['saved_at' => date('Y-m-d\TH:i:s')]);
     }
 } elseif ($method === 'PUT' && $route === '/api/project') {
     try {
@@ -461,7 +536,7 @@ if ($method === 'GET' || $method === 'HEAD') {
         return;
     }
     send_json(['saved_at' => save_project($raw)]);
-} elseif ($method === 'POST' && ($route === '/api/render' || $route === '/api/update')) {
+} elseif ($method === 'POST' && in_array($route, ['/api/render', '/api/update', '/api/auto'], true)) {
     try {
         $body = json_decode(read_body() ?: '{}', true) ?: [];
     } catch (Throwable) {
@@ -470,6 +545,35 @@ if ($method === 'GET' || $method === 'HEAD') {
     if ($route === '/api/render') {
         $draft = (bool)($body['draft'] ?? true);
         $started = start_job('render', array_merge(vidcut_cmd(), ['render'], $draft ? ['--draft'] : []), $draft);
+    } elseif ($route === '/api/auto') {
+        $folder = trim((string)($body['folder'] ?? ''));
+        if ($folder !== '' && str_starts_with($folder, '~/')) {
+            $folder = (getenv('HOME') ?: '') . substr($folder, 1);
+        }
+        if ($folder !== '' && !is_dir($folder)) {
+            send_json(['error' => "目录不存在：$folder"], 400);
+            return;
+        }
+        if ($folder === '' && !is_file("$WORK/media.json")) {
+            send_json(['error' => '请填写素材目录'], 400);
+            return;
+        }
+        $cmd = array_merge(vidcut_cmd(true), ['auto'], $folder !== '' ? [$folder] : []);
+        $name = trim((string)($body['name'] ?? ''));
+        if ($name !== '') {
+            array_push($cmd, '--name', $name);
+        }
+        if (!empty($body['rebuild'])) {
+            $cmd[] = '--rebuild';
+            backup("$WORK/project.json", 'project-before-rebuild');  // 重新生成会覆盖手动修改，先备份
+        }
+        if (!empty($body['final'])) {
+            $cmd[] = '--final';
+        }
+        if ($model = asr_model()) {
+            array_push($cmd, '--model', $model);
+        }
+        $started = start_job('auto', $cmd);
     } else {
         $folder = trim((string)($body['folder'] ?? ''));
         if ($folder !== '' && str_starts_with($folder, '~/')) {

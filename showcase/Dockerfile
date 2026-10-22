@@ -31,10 +31,11 @@ ENV HOME=/cache \
     HF_HOME=/cache/huggingface \
     VIDCUT_REEXEC=1 \
     VIDCUT_WHISPER_MODEL=small \
+    VIDCUT_DEFAULT_FOLDER=/videos \
     PYTHONUNBUFFERED=1
 
 # /videos：素材目录（建议只读挂载）  /work：工作目录（项目、设置、输出视频）  /cache：模型缓存
 VOLUME ["/work", "/cache"]
 EXPOSE 8766
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["help"]
+CMD ["start"]

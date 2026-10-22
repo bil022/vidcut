@@ -28,6 +28,37 @@ docker build -t vidcut --build-arg WITH_TRANSLATE=0 .
 | `/work` | 工作目录：`settings.json`、`project.json`、输出视频 `out/` |
 | `/cache` | 模型缓存（语音识别、翻译模型），用命名卷 `vidcut-cache`，只需下载一次 |
 
+### Docker Desktop（图形界面，不用输入命令）
+
+在 Images 里找到 `vidcut`，点 **Run**，展开 **Optional settings**：
+
+| 字段 | 填写 |
+|---|---|
+| Container name | 随意，例如 `vidcut-japan` |
+| Host port | `8766`（对应容器端口 8766） |
+| Volumes 第 1 行 | Host path：你的视频目录（如 `C:\Users\me\Videos\Japan`）；Container path：`/videos` |
+| Volumes 第 2 行 | Host path：一个空的工作目录（如 `C:\Users\me\vidcut\work_japan`）；Container path：`/work` |
+| Volumes 第 3 行（可选） | Host path：一个缓存目录（如 `C:\Users\me\vidcut\cache`）；Container path：`/cache`，模型只下载一次 |
+| Environment variables（可选） | `VIDCUT_NAME` = 片名；`ANTHROPIC_API_KEY` = 你的 key |
+
+点 Run 后：
+
+1. **第一次**：容器自动处理所有视频并生成预览视频（在 Logs 标签里能看到进度，第一次要下载模型，较慢）
+2. 处理完会自动启动网页编辑器，Logs 里出现“网页编辑器”字样后，浏览器打开 http://localhost:8766
+3. 之后在网页里调整、点“出预览视频”/“出 1080p 成片”；输出文件在工作目录的 `out\` 里
+4. 以后再启动这个容器（Containers 里点 ▶），会直接进入网页编辑器，不会重新处理
+5. 改设置、重新生成、出 1080p、下载都在网页里：右侧“自动设置”点“保存并重新生成”，“输出文件”里点“下载”
+6. 没挂载 `/videos` 也能启动：网页会显示开始页，在里面填素材目录
+
+想让容器运行别的命令，加环境变量 `VIDCUT_CMD`，例如：
+
+| VIDCUT_CMD | 作用 |
+|---|---|
+| `render` | 渲染 1080p 成片后退出 |
+| `auto --rebuild` | 改了 settings.json 后重新生成剪辑和预览 |
+| `update` | 处理新加入素材目录的视频 |
+| `web` | 只启动网页编辑器 |
+
 ### Windows（PowerShell）
 
 ```powershell
@@ -63,6 +94,7 @@ docker run --rm -p 8766:8766 -v ~/Movies/Japan:/videos:ro -v "$PWD/work_japan":/
 | `web` | 网页编辑器 |
 | `make status`、`make help` | 同 Makefile |
 | `help` | 显示用法 |
+| （不写命令） | 默认 `start`：第一次先全自动处理，然后启动网页编辑器 |
 
 ## 3. 用 docker compose（少打字）
 

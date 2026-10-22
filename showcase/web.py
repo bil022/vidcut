@@ -4,16 +4,20 @@
 用法：
   python3 web.py                 # 打开 work/ 工作目录
   python3 web.py -w work_real    # 其他工作目录
-然后浏览器打开 http://127.0.0.1:8765
+然后浏览器打开 http://127.0.0.1:8766
 
 接口：
   GET  /api/state      项目 + 媒体信息（摘要、转录）+ 后台任务状态
   PUT  /api/project    校验后保存 project.json，旧版本存到 history/
   POST /api/render     后台渲染 {"draft": true|false}
   POST /api/update     后台加入新素材 {"folder": "可选的新目录"}（vidcut.py update）
+  POST /api/auto       后台全自动 {"folder", "name", "rebuild", "final"}（vidcut.py auto）
+  GET  /api/settings   读取 settings.json（不存在时生成默认值）
+  PUT  /api/settings   校验后保存 settings.json，旧版本存到 history/
+  GET  /api/outputs    out/ 里的视频和字幕
   GET  /api/job        后台任务进度
   GET  /media/<id>/<proxy.mp4|thumb.jpg|kf_N.jpg>   代理与缩略图（支持 Range，可拖动进度）
-  GET  /out/<文件名>    渲染结果
+  GET  /out/<文件名>    渲染结果（加 ?download=1 作为附件下载）
 """
 from __future__ import annotations
 
@@ -29,7 +33,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 HERE = Path(__file__).resolve().parent
 INDEX = HERE / "web" / "index.html"
@@ -69,7 +73,46 @@ class Editor:
             media[mid]["language"] = tr.get("language")
         data = load_json(self.work / "media.json") or {}
         return {"work": str(self.work), "project": load_json(self.project_file),
-                "media": media, "sources": data.get("sources", []), "job": self.job}
+                "media": media, "sources": data.get("sources", []), "job": self.job,
+                "default_folder": os.environ.get("VIDCUT_DEFAULT_FOLDER", "")}
+
+    def outputs(self) -> list[dict]:
+        out = self.work / "out"
+        files = [f for f in out.glob("*") if f.suffix in (".mp4", ".srt")] if out.is_dir() else []
+        return [{"name": f.name, "size": f.stat().st_size, "mtime": int(f.stat().st_mtime), "url": "out/" + quote(f.name)}
+                for f in sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)]
+
+    def backup(self, path: Path, prefix: str) -> None:
+        if path.exists():
+            hist = self.work / "history"
+            hist.mkdir(parents=True, exist_ok=True)
+            stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            shutil.copy2(path, hist / f"{prefix}-{stamp}.json")
+
+    def settings(self) -> tuple[dict | None, str]:
+        """读取 settings.json；不存在或缺字段时让 vidcut.py 补全默认值。"""
+        self.work.mkdir(parents=True, exist_ok=True)
+        p = subprocess.run(self.vidcut_cmd() + ["settings"], capture_output=True, text=True, cwd=HERE)
+        msg = (p.stdout + p.stderr).strip()
+        return load_json(self.work / "settings.json"), "" if p.returncode == 0 else msg
+
+    def save_settings(self, st: dict) -> list[str]:
+        """写入后用 vidcut.py settings 校验；不通过就恢复原文件。"""
+        path = self.work / "settings.json"
+        with self.lock:
+            old = path.read_bytes() if path.exists() else None
+            self.backup(path, "settings")
+            path.write_text(json.dumps(st, ensure_ascii=False, indent=2))
+            p = subprocess.run(self.vidcut_cmd() + ["settings"], capture_output=True, text=True, cwd=HERE)
+            if p.returncode != 0:
+                if old is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_bytes(old)
+                lines = [ln.strip() for ln in (p.stdout + p.stderr).splitlines()]
+                return [ln for ln in lines if ln and "有问题" not in ln and "punycode" not in ln
+                        and "trace-deprecation" not in ln] or ["设置无效"]
+        return []
 
     def validate(self, p: dict) -> list[str]:
         errs: list[str] = []
@@ -163,11 +206,7 @@ class Editor:
 
     def save(self, p: dict) -> str:
         with self.lock:
-            if self.project_file.exists():
-                hist = self.work / "history"
-                hist.mkdir(exist_ok=True)
-                stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-                shutil.copy2(self.project_file, hist / f"project-{stamp}.json")
+            self.backup(self.project_file, "project")
             tmp = self.project_file.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(p, ensure_ascii=False, indent=2))
             tmp.replace(self.project_file)
@@ -202,6 +241,21 @@ class Editor:
             cmd += ["--model", self.asr_model]
         return self.start_job("update", cmd)
 
+    def start_auto(self, folder: str | None, name: str | None, rebuild: bool, final: bool) -> bool:
+        cmd = self.vidcut_cmd(with_asr=True) + ["auto"]
+        if folder:
+            cmd.append(folder)
+        if name:
+            cmd += ["--name", name]
+        if rebuild:
+            cmd.append("--rebuild")
+            self.backup(self.project_file, "project-before-rebuild")  # 重新生成会覆盖手动修改，先备份
+        if final:
+            cmd.append("--final")
+        if self.asr_model:
+            cmd += ["--model", self.asr_model]
+        return self.start_job("auto", cmd)
+
     def _run_job(self, cmd: list[str]) -> None:
         job = self.job
         try:
@@ -217,7 +271,7 @@ class Editor:
                 job["log"].append(line)
             if (m := re.search(r"完成：(\S+\.mp4)", line)):
                 job["output"] = "out/" + Path(m.group(1)).name
-        ok = proc.wait() == 0 and (job["kind"] != "render" or job["output"])
+        ok = proc.wait() == 0 and (job["kind"] not in ("render",) or job["output"])
         job["status"] = "done" if ok else "failed"
 
 
@@ -243,7 +297,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("请求太大")
         return json.loads(self.rfile.read(n) or b"{}")
 
-    def send_file(self, path: Path, cache: bool):
+    def send_file(self, path: Path, cache: bool, download: bool = False):
         if not path.is_file():
             return self.send_json({"error": "not found"}, 404)
         size = path.stat().st_size
@@ -268,6 +322,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "max-age=3600" if cache else "no-cache")
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        if download:
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(path.name)}")
         self.end_headers()
         try:
             with path.open("rb") as f:
@@ -280,7 +336,8 @@ class Handler(BaseHTTPRequestHandler):
             pass  # 浏览器拖动进度条时会主动断开旧请求
 
     def do_GET(self):
-        path = unquote(urlparse(self.path).path)
+        url = urlparse(self.path)
+        path = unquote(url.path)
         ed = self.editor
         if path in ("/", "/index.html"):
             body = INDEX.read_bytes()
@@ -294,16 +351,34 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(ed.state())
         elif path == "/api/job":
             self.send_json(ed.job)
+        elif path == "/api/outputs":
+            self.send_json(ed.outputs())
+        elif path == "/api/settings":
+            st, err = ed.settings()
+            self.send_json({"settings": st, "error": err}, 200 if st else 500)
         elif (m := re.fullmatch(r"/media/(m_[0-9a-f]{16})/(proxy\.mp4|thumb\.jpg|kf_\d+\.jpg)", path)):
             if m.group(1) not in ed.media():
                 return self.send_json({"error": "unknown media"}, 404)
             self.send_file(ed.work / "derived" / m.group(1) / m.group(2), cache=True)
         elif (m := re.fullmatch(r"/out/([^/\\]+\.(?:mp4|srt))", path)):
-            self.send_file(ed.work / "out" / m.group(1), cache=False)
+            self.send_file(ed.work / "out" / m.group(1), cache=False,
+                           download="download" in parse_qs(url.query))
         else:
             self.send_json({"error": "not found"}, 404)
 
     def do_PUT(self):
+        if urlparse(self.path).path == "/api/settings":
+            try:
+                st = self.read_json()
+            except ValueError as e:
+                return self.send_json({"errors": [f"JSON 无效: {e}"]}, 400)
+            if not isinstance(st, dict):
+                return self.send_json({"errors": ["设置必须是 JSON 对象"]}, 400)
+            if self.editor.job["status"] == "running":
+                return self.send_json({"errors": ["后台任务进行中，请等它完成再改设置"]}, 409)
+            if (errs := self.editor.save_settings(st)):
+                return self.send_json({"errors": errs}, 400)
+            return self.send_json({"saved_at": dt.datetime.now().isoformat(timespec="seconds")})
         if urlparse(self.path).path != "/api/project":
             return self.send_json({"error": "not found"}, 404)
         try:
@@ -327,6 +402,14 @@ class Handler(BaseHTTPRequestHandler):
             if folder and not Path(folder).expanduser().is_dir():
                 return self.send_json({"error": f"目录不存在：{folder}"}, 400)
             started = self.editor.start_update(folder)
+        elif path == "/api/auto":
+            folder = str(body.get("folder") or "").strip() or None
+            if folder and not Path(folder).expanduser().is_dir():
+                return self.send_json({"error": f"目录不存在：{folder}"}, 400)
+            if not folder and not (self.editor.work / "media.json").exists():
+                return self.send_json({"error": "请填写素材目录"}, 400)
+            name = str(body.get("name") or "").strip() or None
+            started = self.editor.start_auto(folder, name, bool(body.get("rebuild")), bool(body.get("final")))
         else:
             return self.send_json({"error": "not found"}, 404)
         if not started:
@@ -338,14 +421,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="vidcut 网页编辑器")
     ap.add_argument("-w", "--work", default="work", help="工作目录（默认 ./work）")
     ap.add_argument("--host", default="127.0.0.1", help="默认只允许本机访问")
-    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--port", type=int, default=8766)
     ap.add_argument("--asr", default="auto", choices=["auto", "mlx-whisper", "faster-whisper", "none"],
                     help="加入新素材时用的语音识别；auto = Apple Silicon 用 mlx-whisper，其他跳过转录")
     ap.add_argument("--asr-model", help="Whisper 模型（默认用 models/ 下已下载的模型）")
     args = ap.parse_args()
     work = Path(args.work).resolve()
     if not (work / "project.json").exists():
-        sys.exit(f"{work} 下没有 project.json，请先运行 vidcut.py roughcut")
+        print(f"{work} 里还没有剪辑项目：在网页上填写素材目录，点“开始自动处理”", flush=True)
     editor = Editor(work)
     if args.asr == "auto":
         apple = platform.system() == "Darwin" and platform.machine() == "arm64"
@@ -356,7 +439,7 @@ def main() -> None:
     editor.asr_model = args.asr_model or (str(local_models[0]) if local_models else None)
     Handler.editor = editor
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"编辑 {work / 'project.json'}\n打开 http://{args.host}:{args.port}  （Ctrl+C 退出）", flush=True)
+    print(f"工作目录 {work}\n打开 http://{args.host}:{args.port}  （Ctrl+C 退出）", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

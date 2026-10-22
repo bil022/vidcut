@@ -130,13 +130,22 @@ uv run --with mlx-whisper vidcut.py transcribe --model models/whisper-small-mlx
 
 ## 网页编辑器
 
+**所有操作都可以在网页上完成**，不需要命令行：
+
+1. `python3 web.py -w work_japan`（或 `make web WORK=work_japan`、Docker 的 `vidcut`），浏览器打开 http://127.0.0.1:8766
+2. 工作目录是空的：开始页填写素材目录和片名，点“开始自动处理”，完成后进入编辑页
+3. 右侧“自动设置”：改长视频、转场、音量、字幕、标题等参数，点“保存并重新生成”（可勾选同时出 1080p）
+4. 左侧逐段微调，点“出预览视频”/“出 1080p 成片”
+5. 右侧“输出文件”：播放或下载所有视频和字幕
+
+
 不想手改 JSON，可以用网页编辑同一个 `project.json`（服务只用 Python 标准库；出片和扫描时通过 `uv` 调用 `vidcut.py`）：
 
 ```bash
 python3 web.py -w work
 ```
 
-浏览器打开 http://127.0.0.1:8765 ，可以：
+浏览器打开 http://127.0.0.1:8766 ，可以：
 
 - **顺序**：拖动 ⋮⋮ 或用 ↑↓；“按拍摄时间排序”一键恢复时间顺序（片头固定在最前，标题卡和间隔跟着后面那段走）
 - **裁剪**：改入点、出点、音量、淡入淡出；点击卡片在右侧预览，用“设为入点 / 设为出点”精确裁剪
@@ -160,8 +169,8 @@ python3 web.py -w work
 `index.php` 是同一个编辑器的 PHP 实现（PHP 8.1+，页面、接口、功能都与 `web.py` 相同），二选一即可：
 
 ```bash
-PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8765 index.php
-VIDCUT_WORK=work_real PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8765 index.php   # 其他工作目录
+PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8766 index.php
+VIDCUT_WORK=work_real PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8766 index.php   # 其他工作目录
 ```
 
 - `PHP_CLI_SERVER_WORKERS=4` 让 PHP 自带服务器同时处理多个请求（播放视频时还能保存、轮询进度），不要省略
