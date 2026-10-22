@@ -100,6 +100,16 @@ class Workspace:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def backup(self, path: Path, prefix: str) -> Path | None:
+        """覆盖或修改用户的 JSON 之前，把旧文件存到 history/（project.json、settings.json 可能有手动修改）。"""
+        if not path.exists():
+            return None
+        hist = self.root / "history"
+        hist.mkdir(parents=True, exist_ok=True)
+        dest = hist / f"{prefix}-{dt.datetime.now():%Y%m%d-%H%M%S-%f}.json"
+        shutil.copy2(path, dest)
+        return dest
+
     def media(self) -> dict:
         data = load_json(self.media_file)
         if not data:
@@ -158,6 +168,8 @@ def load_settings(ws: Workspace, name: str | None = None) -> dict:
     if name:
         s["name"] = name
     if s != cur:
+        if cur:  # 已有的设置文件被补了新字段（例如升级之后）：先备份
+            ws.backup(path, "settings-before-upgrade")
         save_json(path, s)
         log(f"设置文件 → {path}（可直接编辑后重新运行）")
     if errs := check_settings(s):
@@ -862,6 +874,7 @@ def sync_project_subtitles(ws: Workspace) -> None:
                 sub["translation"] = seg["translation"]
                 changed += 1
     if changed:
+        ws.backup(ws.project_file, "project-before-translations")
         save_json(ws.project_file, project)
         log(f"  project.json 里补上了 {changed} 句译文")
 
@@ -1182,6 +1195,8 @@ def cmd_roughcut(ws: Workspace, args) -> None:
     if args.captions:
         st["titles"]["captions"] = True
     project = build_project(ws, st)
+    if (old := ws.backup(ws.project_file, "project-before-rebuild")):
+        log(f"原来的 project.json 已备份到 {old}")
     save_json(ws.project_file, project)
     items, excluded = project["tracks"][0]["items"], project["excluded"]
 

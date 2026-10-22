@@ -248,8 +248,7 @@ class Editor:
         if name:
             cmd += ["--name", name]
         if rebuild:
-            cmd.append("--rebuild")
-            self.backup(self.project_file, "project-before-rebuild")  # 重新生成会覆盖手动修改，先备份
+            cmd.append("--rebuild")  # vidcut.py 覆盖 project.json 前会自己备份到 history/
         if final:
             cmd.append("--final")
         if self.asr_model:

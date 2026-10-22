@@ -564,8 +564,7 @@ if ($method === 'GET' || $method === 'HEAD') {
             array_push($cmd, '--name', $name);
         }
         if (!empty($body['rebuild'])) {
-            $cmd[] = '--rebuild';
-            backup("$WORK/project.json", 'project-before-rebuild');  // 重新生成会覆盖手动修改，先备份
+            $cmd[] = '--rebuild';  // vidcut.py 覆盖 project.json 前会自己备份到 history/
         }
         if (!empty($body['final'])) {
             $cmd[] = '--final';
