@@ -1,0 +1,35 @@
+# 用法（Windows PowerShell / macOS / Linux 相同）：
+#   1. 复制 .env.example 为 .env，填上素材目录 VIDEOS 和工作目录 WORK
+#   2. docker compose build
+#   3. docker compose run --rm vidcut auto /videos --name "日本之旅"     # 出预览视频
+#      docker compose up web                                         # 网页编辑器 http://localhost:8766
+#      docker compose run --rm vidcut render                         # 1080p 成片
+services:
+  vidcut:
+    build: .
+    image: vidcut
+    volumes:
+      - ${VIDEOS:-./samples}:/videos:ro
+      - ${WORK:-./work_docker}:/work
+      - vidcut-cache:/cache
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - VIDCUT_WHISPER_MODEL=${VIDCUT_WHISPER_MODEL:-small}
+    profiles: ["cli"]
+
+  web:
+    image: vidcut
+    build: .
+    command: ["web"]
+    ports:
+      - "${PORT:-8766}:8766"
+    volumes:
+      - ${VIDEOS:-./samples}:/videos:ro
+      - ${WORK:-./work_docker}:/work
+      - vidcut-cache:/cache
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - VIDCUT_WHISPER_MODEL=${VIDCUT_WHISPER_MODEL:-small}
+
+volumes:
+  vidcut-cache:

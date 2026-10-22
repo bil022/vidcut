@@ -57,6 +57,14 @@ ol#items { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 .speech .seg:hover { color: var(--accent); }
 .speech .seg.cut { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--line); }
 .speech .ts { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+.speech .trl { display: block; color: var(--muted); margin-left: 3.2em; }
+.speech .subedit { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 3px 0; }
+.speech .subedit input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 5px; padding: 2px 4px; flex: 1 1 200px; min-width: 0; }
+.trrow { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 4px; }
+.trrow select, .trrow input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 1px 4px; }
+.trrow input { width: 56px; }
+.badge { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-left: 6px; font-weight: normal; }
 .fields { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 12px; color: var(--muted); margin-top: 4px; }
 .fields label { display: inline-flex; gap: 4px; align-items: center; }
 .fields input, .fields select { font: inherit; color: var(--text); background: var(--bg);
@@ -87,6 +95,7 @@ aside { position: sticky; top: 64px; align-self: start; display: flex; flex-dire
 /* 留出播放器控制条的高度，避免字幕被挡住 */
 #subOv span { position: absolute; left: 50%; bottom: calc(3% + 44px); transform: translateX(-50%); max-width: 86%; text-align: center;
   color: #fff; font-size: max(13px, 4cqh); line-height: 1.35; text-shadow: 0 0 4px #000, 0 1px 3px #000, 0 0 1px #000; }
+#subOv .tr { display: block; color: #ffe48c; font-size: .82em; }
 #nowInfo { font-size: 12px; color: var(--muted); min-height: 18px; margin-top: 6px; }
 h3 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 18px 0 6px; }
 #library { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -142,15 +151,21 @@ select { font: inherit; color: var(--text); background: var(--panel); border: 1p
         <button id="setIn" disabled>设为入点</button>
         <button id="setOut" disabled>设为出点</button>
       </div>
-      <div class="muted small">浏览器内实时预览：按顺序播放代理文件，应用裁剪、音量、淡入淡出、标题卡和画面文字（竖屏模糊背景只在渲染时生成）。</div>
+      <div class="muted small">浏览器内实时预览：按顺序播放代理文件，应用裁剪、音量、淡入淡出、标题卡、画面文字和双语字幕；转场在这里近似显示为淡入淡出，准确效果看“出预览视频”。</div>
     </div>
     <div class="panel">
       <div class="row" style="margin-top:0">
         <label class="muted">竖屏
           <select id="portrait"><option value="blur_fill">模糊背景</option><option value="pad">黑边</option></select></label>
         <span class="spacer"></span>
-        <button id="renderDraft">出草稿</button>
+        <button id="renderDraft">出预览视频</button>
         <button id="renderFinal">出 1080p 成片</button>
+      </div>
+      <div class="row">
+        <label class="muted">字幕
+          <select id="subShow"><option value="both">原文 + 译文</option><option value="original">只显示原文</option>
+            <option value="translation">只显示译文</option></select></label>
+        <label class="muted"><input type="checkbox" id="subBurn"> 烧进视频</label>
       </div>
       <div class="row">
         <input id="folder" placeholder="新素材目录（留空则重新扫描已有目录）">
@@ -239,6 +254,9 @@ async function save() {
 function render() {
   $('#name').value = P.project.name;
   $('#portrait').value = P.project.portrait_mode;
+  const sc = P.project.subtitles || { burn_in: false, show: 'both' };
+  $('#subShow').value = sc.show || 'both';
+  $('#subBurn').checked = !!sc.burn_in;
   const ol = $('#items');
   ol.replaceChildren(...items().map((it, i) =>
     it.type === 'clip' ? clipCard(it, i) : it.type === 'title' ? titleCard(it, i) : gapCard(it, i)));
@@ -288,7 +306,30 @@ function moveBtns(i) {
   ];
 }
 
+const TRANSITIONS = [['cut', '无（直接切换）'], ['fade', '淡化'], ['fadeblack', '经过黑场'], ['dissolve', '溶解'],
+  ['wipeleft', '向左擦除'], ['slideleft', '向左滑动'], ['smoothleft', '平滑左移'], ['circleopen', '圆形展开'], ['radial', '径向']];
+
+// 从上一项过渡到这一项的转场
+function transitionRow(it, i) {
+  if (i === 0) return null;
+  const tr = it.transition;
+  const sel = h('select', { 'aria-label': '转场' }, ...TRANSITIONS.map(([v, t]) => h('option', { value: v }, t)));
+  sel.value = tr?.type || 'cut';
+  sel.addEventListener('click', (e) => e.stopPropagation());
+  sel.addEventListener('change', () => mutate(() => {
+    if (sel.value === 'cut') delete it.transition;
+    else it.transition = { type: sel.value, duration_ms: tr?.duration_ms || 600 };
+  }));
+  const dur = tr ? h('input', { type: 'number', step: '0.1', min: '0.1', max: '3', value: sec(tr.duration_ms), 'aria-label': '转场时长' }) : null;
+  if (dur) {
+    dur.addEventListener('click', (e) => e.stopPropagation());
+    dur.addEventListener('change', () => mutate(() => { it.transition.duration_ms = clamp(Math.round(parseFloat(dur.value) * 1000) || 600, 100, 3000); }));
+  }
+  return h('div', { class: 'trrow' }, '⤳ 转场', sel, dur, dur ? 's' : null);
+}
+
 function cardShell(it, i, cls, thumb, body) {
+  body = [transitionRow(it, i), ...body];
   const card = h('li', { class: `card ${cls}` + (it.id === selectedId ? ' selected' : ''), 'data-id': it.id, 'data-idx': i },
     h('div', { class: 'handle', draggable: 'true', title: '拖动排序' }, '⋮⋮'), thumb, h('div', {}, ...body));
   addDrag(card, i);
@@ -301,7 +342,8 @@ function clipCard(it, i) {
   const len = clipLen(it);
   const cap = it.caption;
   const body = [
-    h('div', { class: 'title' }, ai.title || it.name),
+    h('div', { class: 'title' }, ai.title || it.name, it.part ? h('span', { class: 'badge' }, it.part) : null,
+      it.auto ? h('span', { class: 'badge', title: `测得响度 ${it.auto.measured_lufs ?? '—'} LUFS，${it.auto.speech ? '按人声' : '按环境声'}自动调整` }, `自动音量 ${it.auto.volume_db > 0 ? '+' : ''}${it.auto.volume_db}dB`) : null),
     h('div', { class: 'meta' }, [it.name, it.group, `原长 ${sec(m.duration_ms)}s`, m.portrait && '竖屏'].filter(Boolean).join(' · ')),
     ai.summary && ai.summary !== speechText(it.media_id) ? h('div', { class: 'summary' }, ai.summary) : null,
     speechLine(it),
@@ -309,7 +351,7 @@ function clipCard(it, i) {
       numField('入点', sec(it.in_ms), (v) => { it.in_ms = clamp(Math.round(v * 1000), 0, it.out_ms - 200); fixCaption(it); }, { unit: 's', min: 0 }),
       numField('出点', sec(it.out_ms), (v) => { it.out_ms = clamp(Math.round(v * 1000), it.in_ms + 200, m.duration_ms); fixCaption(it); }, { unit: 's', min: 0 }),
       h('span', {}, `= ${sec(len)}s`),
-      numField('音量', it.volume_db ?? 0, (v) => { it.volume_db = clamp(Math.round(v), -30, 30); }, { unit: 'dB', step: '1', min: -30, max: 30 }),
+      numField('音量', it.volume_db ?? 0, (v) => { it.volume_db = clamp(Math.round(v * 2) / 2, -30, 30); }, { unit: 'dB', step: '0.5', min: -30, max: 30 }),
       numField('淡入', sec(it.fade_in_ms || 0), (v) => { it.fade_in_ms = clamp(Math.round(v * 1000), 0, len - (it.fade_out_ms || 0)); }, { unit: 's', min: 0 }),
       numField('淡出', sec(it.fade_out_ms || 0), (v) => { it.fade_out_ms = clamp(Math.round(v * 1000), 0, len - (it.fade_in_ms || 0)); }, { unit: 's', min: 0 }),
       h('span', { class: 'actions' },
@@ -337,20 +379,47 @@ function clipCard(it, i) {
   return card;
 }
 
-// 卡片上逐句列出语音（原文：中文就是中文，英文就是英文）；点一句跳到那个位置
+// 片段的字幕：project.json 里的 subtitles（可编辑）；旧项目没有时从转录里取
+function clipSubs(it) {
+  if (Array.isArray(it.subtitles)) return it.subtitles;
+  return (S.media[it.media_id]?.transcript || []).map((sg) => ({ start_ms: Math.round(sg.start * 1000),
+    end_ms: Math.round(sg.end * 1000), text: sg.text, translation: sg.translation || '' }));
+}
+let editingSubsId = null;
+
+// 卡片上逐句列出语音原文和译文；点一句跳到那个位置；“编辑字幕”可以直接改文字
 function speechLine(it) {
-  const segs = S.media[it.media_id]?.transcript || [];
-  if (!segs.length) return null;
-  const lang = langName(S.media[it.media_id].language);
-  return h('div', { class: 'speech' },
-    h('div', { class: 'muted' }, `语音${lang ? `（${lang}）` : ''}`),
-    ...segs.map((sg) => {
-      const inside = sg.end * 1000 > it.in_ms && sg.start * 1000 < it.out_ms;
-      return h('div', { class: 'seg' + (inside ? '' : ' cut'),
-        title: inside ? '点击跳到这句' : '这句在入出点范围外，不会出现在成片里',
-        onclick: stop_(() => jumpTo(it, sg.start)) },
-        h('span', { class: 'ts' }, mmss(sg.start)), sg.text);
-    }));
+  const subs = clipSubs(it);
+  if (!subs.length) return null;
+  // 同一段视频里可能中英都有：列出出现过的所有语言
+  const tr = S.media[it.media_id]?.transcript || [];
+  const lang = [...new Set(tr.map((x) => x.lang).filter(Boolean))].map(langName).join(' / ') || langName(S.media[it.media_id]?.language);
+  const editing = editingSubsId === it.id;
+  const toggle = h('button', { class: 'link', onclick: stop_(() => {
+    if (!editing && !Array.isArray(it.subtitles)) mutate(() => { it.subtitles = clipSubs(it).map((x) => ({ ...x })); });
+    editingSubsId = editing ? null : it.id;
+    render();
+  }) }, editing ? '完成' : '编辑字幕');
+  const rows = subs.map((sb, k) => {
+    const inside = sb.end_ms > it.in_ms && sb.start_ms < it.out_ms;
+    if (editing) {
+      const field = (key, ph) => {
+        const inp = h('input', { type: 'text', value: sb[key] || '', placeholder: ph, maxlength: 200 });
+        inp.addEventListener('click', (e) => e.stopPropagation());
+        inp.addEventListener('change', () => mutate(() => { it.subtitles[k][key] = inp.value.trim(); }));
+        return inp;
+      };
+      return h('div', { class: 'subedit' }, h('span', { class: 'ts' }, mmss(sb.start_ms / 1000)),
+        field('text', '原文'), field('translation', '译文'),
+        h('button', { class: 'icon', title: '删除这句字幕', onclick: stop_(() => mutate(() => { it.subtitles.splice(k, 1); })) }, '✕'));
+    }
+    return h('div', { class: 'seg' + (inside ? '' : ' cut'),
+      title: inside ? '点击跳到这句' : '这句在入出点范围外，不会出现在成片里',
+      onclick: stop_(() => jumpTo(it, sb.start_ms / 1000)) },
+      h('span', { class: 'ts' }, mmss(sb.start_ms / 1000)), sb.text,
+      sb.translation ? h('span', { class: 'trl' }, sb.translation) : null);
+  });
+  return h('div', { class: 'speech' }, h('div', { class: 'muted' }, `语音${lang ? `（${lang}）` : ''} `, toggle), ...rows);
 }
 const mmss = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
 
@@ -710,23 +779,36 @@ function fadeFactor(t, len, fi, fo) {
   return clamp(f, 0, 1);
 }
 
-// 播放器里按当前时间显示语音原文（视频时间就是原片时间）
-function showSpeech(mid, show) {
-  const t = video.currentTime;
-  const seg = show && mid ? (S.media[mid]?.transcript || []).find((sg) => t >= sg.start && t <= sg.end) : null;
+// 播放器里按当前时间显示字幕（视频时间就是原片时间），按“字幕”设置显示原文/译文
+function showSpeech(subs, show) {
+  const t = video.currentTime * 1000;
+  const sb = show && subs ? subs.find((x) => t >= x.start_ms && t <= x.end_ms) : null;
+  const mode_ = P.project.subtitles?.show || 'both';
+  const orig = sb && mode_ !== 'translation' ? sb.text : '';
+  const trans = sb && mode_ !== 'original' ? sb.translation : '';
   const ov = $('#subOv');
-  if (seg) ov.querySelector('span').textContent = seg.text;
-  ov.style.display = seg ? 'block' : 'none';
+  if (orig || trans) ov.querySelector('span').replaceChildren(orig || '', trans ? h('span', { class: 'tr' }, trans) : '');
+  ov.style.display = orig || trans ? 'block' : 'none';
 }
 
+const transMs = (it) => (it?.transition && it.transition.type !== 'cut' ? it.transition.duration_ms || 600 : 0);
+function nextItem(it) { const i = items().indexOf(it); return i >= 0 ? items()[i + 1] : null; }
+
 function applyEffects() {
-  if (mode === 'source') { video.style.opacity = 1; showSpeech(sourceMid, true); return; }
+  if (mode === 'source') {
+    video.style.opacity = 1;
+    showSpeech(clipSubs({ media_id: sourceMid, in_ms: 0, out_ms: Infinity }), true);
+    return;
+  }
   if (!current || current.type !== 'clip' || mode === 'output') { video.style.opacity = 1; showSpeech(null, false); return; }
   const t = video.currentTime * 1000 - current.in_ms;
   const len = clipLen(current);
   // 只在入出点范围内应用效果，拖到范围外时按原样显示，方便找新的入出点
   const inside = t >= 0 && t <= len;
-  const f = inside ? fadeFactor(t, len, current.fade_in_ms, current.fade_out_ms) : 1;
+  // 转场在浏览器里近似成前后各半段的淡入淡出
+  const fin = Math.max(current.fade_in_ms || 0, mode === 'all' ? transMs(current) / 2 : 0);
+  const fout = Math.max(current.fade_out_ms || 0, mode === 'all' ? transMs(nextItem(current)) / 2 : 0);
+  const f = inside ? fadeFactor(t, len, fin, fout) : 1;
   video.style.opacity = f;
   setGain(dbToGain(current.volume_db) * f);
   const c = current.caption;
@@ -741,13 +823,15 @@ function applyEffects() {
   } else {
     ov.style.display = 'none';
   }
-  showSpeech(current.media_id, inside);
+  showSpeech(clipSubs(current), inside);
 }
 
 function tick() {
   if (current?.type === 'title' && (mode === 'all' || mode === 'title')) {
     const t = performance.now() - titleStart;
-    $('#titleOv').style.opacity = fadeFactor(t, current.duration_ms, current.fade_in_ms, current.fade_out_ms);
+    const fin = Math.max(current.fade_in_ms || 0, mode === 'all' ? transMs(current) / 2 : 0);
+    const fout = Math.max(current.fade_out_ms || 0, mode === 'all' ? transMs(nextItem(current)) / 2 : 0);
+    $('#titleOv').style.opacity = fadeFactor(t, current.duration_ms, fin, fout);
   } else if ((mode === 'clip' || mode === 'all') && current?.type === 'clip') {
     const t = video.currentTime * 1000;
     applyEffects();
@@ -846,7 +930,7 @@ function showOutput(r) {
   const url = r.output + '?t=' + Date.now();
   $('#jobOut').replaceChildren(
     h('button', { class: 'primary', onclick: () => { stop(); mode = 'output'; current = null; video.src = url; setGain(1); updateNow(); updateMarkButtons(); ensureAudio(); video.play(); } },
-      `▶ 播放${r.draft ? '草稿' : '成片'}`),
+      `▶ 播放${r.draft ? '预览视频' : '成片'}`),
     h('a', { href: url, download: '' }, '下载 MP4'),
   );
 }
@@ -854,6 +938,8 @@ function showOutput(r) {
 // ───────── 事件 ─────────
 $('#name').addEventListener('change', (e) => mutate(() => { P.project.name = e.target.value.trim() || P.project.name; }));
 $('#portrait').addEventListener('change', (e) => mutate(() => { P.project.portrait_mode = e.target.value; }));
+$('#subShow').addEventListener('change', (e) => mutate(() => { P.project.subtitles = { ...(P.project.subtitles || {}), show: e.target.value }; }));
+$('#subBurn').addEventListener('change', (e) => mutate(() => { P.project.subtitles = { show: 'both', ...(P.project.subtitles || {}), burn_in: e.target.checked }; }));
 $('#undo').onclick = undo;
 $('#redo').onclick = redo;
 $('#save').onclick = save;

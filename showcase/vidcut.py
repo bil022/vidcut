@@ -11,9 +11,11 @@
   analyze    在代理上检测静音、黑屏、场景切换、模糊度，抽关键帧
   transcribe 语音转录，自动识别中文/英文等（mlx-whisper / faster-whisper，未安装则跳过）
   transcript 把所有语音整理成文字稿 transcript.md（transcribe 结束时也会自动生成）
+  translate  把语音翻译成另一种语言（中文→英文，英文→中文）；Claude 优先，不可用时用离线的 Argos Translate
   summarize  用 Claude 看关键帧 + 转录，生成摘要和初剪建议（无 API 时用规则兜底）
   roughcut   生成 project.json（按时间/地点分组排序），可手动编辑
-  render     分段渲染 + 拼接 + 响度标准化 → MP4 和 SRT；--draft 用代理快速出低清草稿
+  render     分段渲染 + 转场 + 字幕 + 响度标准化 → MP4 和 SRT；--draft 用代理快速出预览视频
+  auto       一条命令全自动：scan → … → roughcut → 预览视频（--final 同时出成片）；参数在 settings.json
   all        依次执行 scan → roughcut
   update     加入新素材：重新扫描已知目录（及新目录），只处理新增视频，不改 project.json
 """
@@ -65,6 +67,17 @@ def save_json(path: Path, data) -> None:
     tmp.replace(path)
 
 
+_ffmpeg_major: int | None = None
+
+
+def ffmpeg_major() -> int:
+    global _ffmpeg_major
+    if _ffmpeg_major is None:
+        m = re.search(r"ffmpeg version n?(\d+)", run(["ffmpeg", "-version"]).stdout)
+        _ffmpeg_major = int(m.group(1)) if m else 99  # 开发版本号不是数字时按新版本处理
+    return _ffmpeg_major
+
+
 _filters_cache: str | None = None
 
 
@@ -92,6 +105,112 @@ class Workspace:
         if not data:
             sys.exit("还没有 media.json，请先运行: vidcut.py scan <素材目录>")
         return data["media"]
+
+
+# ───────────────────────── settings.json：自动化参数 ─────────────────────────
+
+HERE = Path(__file__).resolve().parent
+TRANSITIONS = {"cut", "fade", "fadeblack", "fadewhite", "dissolve", "wipeleft", "wiperight", "slideleft",
+               "slideright", "smoothleft", "smoothright", "circleopen", "circleclose", "radial", "zoomin", "distance"}
+
+DEFAULT_SETTINGS = {
+    "_说明": {
+        "name": "片名，用在片头标题和输出文件名上",
+        "output": "成片分辨率/帧率；preview_resolution 是预览视频的分辨率；portrait_mode 竖屏处理：blur_fill 模糊背景 / pad 黑边",
+        "long_clips": "超过 threshold_s 秒的视频只保留开头 head_s 秒和结尾 tail_s 秒（在 AI 建议的入出点范围内取）；threshold_s 设为 0 关闭",
+        "transitions": "片段之间的转场：type 可选 fade / fadeblack / dissolve / wipeleft / slideleft / smoothleft / circleopen / cut（无转场）等；"
+                       "group_type 用在换天/换地点处；part_type 用在同一视频的开头和结尾之间",
+        "titles": "opening 片头标题卡，groups 每天/每个地点的标题卡，captions 把 AI 标题叠在每段画面上，group_km 同组地点半径",
+        "audio": "auto_volume 按响度自动调每段音量：有人说话的段落调到 speech_lufs，环境声调到 ambient_lufs（最多提升 ambient_max_boost_db），"
+                 "单段最多调整 max_gain_db；final_lufs 整片最终响度",
+        "subtitles": "burn_in 把语音字幕烧进视频；translate 自动翻译（中文↔英文）；show 显示 both 原文+译文 / original 只原文 / translation 只译文",
+        "speech": "language 语音语言（auto 自动识别）；whisper_model 语音识别模型（null 用 models/ 下已下载的或默认模型）",
+    },
+    "name": "My Trip",
+    "output": {"resolution": [1920, 1080], "fps": 30, "preview_resolution": [960, 540], "portrait_mode": "blur_fill"},
+    "long_clips": {"threshold_s": 15, "head_s": 5, "tail_s": 5},
+    "transitions": {"type": "fade", "duration_s": 0.6, "group_type": "fadeblack", "group_duration_s": 0.8,
+                    "part_type": "fade", "part_duration_s": 0.5},
+    "titles": {"opening": True, "groups": True, "captions": False, "group_km": 30},
+    "audio": {"auto_volume": True, "speech_lufs": -16, "ambient_lufs": -23, "ambient_max_boost_db": 6,
+              "max_gain_db": 12, "final_lufs": -16},
+    "subtitles": {"burn_in": True, "translate": True, "show": "both"},
+    "speech": {"language": "auto", "whisper_model": None},
+}
+
+
+def merge_defaults(cur: dict, default: dict) -> dict:
+    """用户的 settings.json 缺了新版本加的字段时，用默认值补上（不覆盖用户的值）。"""
+    out = dict(cur)
+    for k, v in default.items():
+        if k not in out:
+            out[k] = v
+        elif isinstance(v, dict) and isinstance(out[k], dict) and k != "_说明":
+            out[k] = merge_defaults(out[k], v)
+    return out
+
+
+def load_settings(ws: Workspace, name: str | None = None) -> dict:
+    path = ws.root / "settings.json"
+    cur = load_json(path, {})
+    s = merge_defaults(cur, DEFAULT_SETTINGS)
+    s["_说明"] = DEFAULT_SETTINGS["_说明"]  # 说明文字始终用最新版本
+    if name:
+        s["name"] = name
+    if s != cur:
+        save_json(path, s)
+        log(f"设置文件 → {path}（可直接编辑后重新运行）")
+    tr = s["transitions"]
+    for k in ("type", "group_type", "part_type"):
+        if tr[k] not in TRANSITIONS:
+            sys.exit(f"settings.json: transitions.{tr[k]} 不是可用的转场，可选：{', '.join(sorted(TRANSITIONS))}")
+    return s
+
+
+def apple_silicon() -> bool:
+    import platform
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def default_whisper_model() -> str | None:
+    if os.environ.get("VIDCUT_WHISPER_MODEL"):  # Docker 镜像里用它指定 faster-whisper 模型
+        return os.environ["VIDCUT_WHISPER_MODEL"]
+    local = sorted((HERE / "models").glob("*whisper*")) if apple_silicon() else []
+    return str(local[0]) if local else None
+
+
+def reexec_with(package: str, argv: list[str], timeout: float | None = None) -> bool:
+    """当前环境缺少某个可选依赖时，用 uv 临时带上它重新运行这一步。"""
+    if os.environ.get("VIDCUT_REEXEC") or not shutil.which("uv"):
+        return False
+    log(f"  （自动切换到带 {package} 的环境运行这一步）")
+    env = {**os.environ, "VIDCUT_REEXEC": "1"}
+    try:
+        return subprocess.run(["uv", "run", "--with", package, str(Path(__file__).resolve()), *argv],
+                              env=env, timeout=timeout).returncode == 0
+    except subprocess.TimeoutExpired:
+        log(f"  超过 {timeout:.0f} 秒仍未完成，跳过这一步（下次运行会继续）")
+        return False
+
+
+def measure_lufs(src: Path, start: float, dur: float) -> float | None:
+    """一段音频的综合响度（LUFS）；静音或太短时返回 None。"""
+    # 用 loudnorm 的测量结果（各版本 ffmpeg 都支持；ebur128 在 ffmpeg 5.1 上会出错却仍输出 0 LUFS）
+    p = run(["ffmpeg", "-hide_banner", "-nostdin", "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(src),
+             "-vn", "-af", "loudnorm=print_format=json", "-f", "null", "-"], check=False)
+    if p.returncode != 0 or "{" not in p.stderr:
+        return None
+    try:
+        value = float(json.loads(p.stderr[p.stderr.rindex("{"):p.stderr.rindex("}") + 1])["input_i"])
+    except (ValueError, KeyError):
+        return None
+    return value if -60 < value < 0 else None
+
+
+def media_duration(path: Path) -> float:
+    out = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration",
+               "-of", "default=nw=1:nk=1", str(path)]).stdout.strip()
+    return float(out)
 
 
 # ───────────────────────── scan ─────────────────────────
@@ -365,7 +484,13 @@ def load_asr(model: str | None):
         fw = WhisperModel(size, device="auto", compute_type="int8")
 
         def asr(wav: Path, language: str | None):
-            segs, info = fw.transcribe(str(wav), language=language, vad_filter=True, word_timestamps=True,
+            # 自己读 ffmpeg 生成的 16kHz 单声道 WAV 交给模型，不经过 faster-whisper 的 PyAV 解码
+            # （新版 PyAV 改了接口，会让 faster-whisper 读文件时报错）
+            import wave
+            import numpy as np
+            with wave.open(str(wav)) as w:
+                audio = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
+            segs, info = fw.transcribe(audio, language=language, vad_filter=True, word_timestamps=True,
                                        initial_prompt=ZH_PROMPT if language in (None, "zh") else None)
             return info.language, [(s.start, s.end, s.text.strip()) for s in segs]
         return f"faster-whisper ({size})", asr
@@ -374,8 +499,13 @@ def load_asr(model: str | None):
 
 
 def cmd_transcribe(ws: Workspace, args) -> None:
-    name, asr = load_asr(args.model)
+    model = args.model or default_whisper_model()
+    name, asr = load_asr(model)
     if asr is None:
+        argv = (["-w", str(ws.root.resolve()), "transcribe"] + (["--force"] if args.force else [])
+                + (["--language", args.language] if args.language else []) + (["--model", model] if model else []))
+        if reexec_with("mlx-whisper" if apple_silicon() else "faster-whisper", argv):
+            return
         log("未安装语音识别库，跳过转录。启用方法（二选一）：\n"
             "  uv run --with mlx-whisper vidcut.py transcribe      # Apple Silicon\n"
             "  uv run --with faster-whisper vidcut.py transcribe   # 其他平台")
@@ -393,20 +523,46 @@ def cmd_transcribe(ws: Workspace, args) -> None:
             save_json(out, {"engine": name, "language": None, "segments": []})
             log(f"  {m['name']:<16} 无有效语音")
             continue
-        wav = d / "audio16k.wav"
-        ffmpeg("-i", str(d / "proxy.mp4"), "-vn", "-ac", "1", "-ar", "16000", str(wav))
-        lang, segs = asr(wav, args.language)
+        # 按静音把音频切成几个说话区段，逐段识别：长时间静音后 Whisper 容易漏掉后面的话，
+        # 而且每段可以各自判断语言（前面说中文、后面说英文的视频很常见）
+        keep, lang_dur = [], {}
+        wav = d / "region16k.wav"
+        for r0, r1 in speech_regions(a.get("silence", []), dur):
+            ffmpeg("-ss", f"{r0:.3f}", "-t", f"{r1 - r0:.3f}", "-i", str(d / "proxy.mp4"),
+                   "-vn", "-ac", "1", "-ar", "16000", str(wav))
+            lang, segs = asr(wav, args.language)
+            for s, e, text in segs:
+                s, e = r0 + s, min(r0 + e, r1)
+                # Whisper 在静音段容易“编”出文字：丢掉大部分落在静音里的句子
+                overlap = sum(max(0, min(e, b) - max(s, a_)) for a_, b in a.get("silence", []))
+                if text and e > s and overlap < (e - s) * 0.7:
+                    keep.append({"start": round(s, 2), "end": round(e, 2), "text": text, "lang": lang})
+                    lang_dur[lang] = lang_dur.get(lang, 0) + e - s
         wav.unlink(missing_ok=True)
-        # Whisper 在静音段容易“编”出文字：丢掉大部分落在静音里的句子
-        keep = []
-        for s, e, text in segs:
-            overlap = sum(max(0, min(e, b) - max(s, a_)) for a_, b in a.get("silence", []))
-            if text and overlap < (e - s) * 0.7:
-                keep.append({"start": round(s, 2), "end": round(e, 2), "text": text})
-        save_json(out, {"engine": name, "language": lang if keep else None, "segments": keep})
-        log(f"  {m['name']:<16} [{lang if keep else '-'}] " + (" ".join(x["text"] for x in keep)[:60] or "（无）"))
+        main = max(lang_dur, key=lang_dur.get) if keep else None
+        save_json(out, {"engine": name, "language": main, "segments": keep})
+        langs = "/".join(sorted(lang_dur, key=lang_dur.get, reverse=True)) or "-"
+        log(f"  {m['name']:<16} [{langs}] " + (" ".join(x["text"] for x in keep)[:70] or "（无）"))
     log("转录完成")
     write_transcript(ws)
+
+
+def speech_regions(silence: list[list[float]], dur: float) -> list[tuple[float, float]]:
+    """静音区段的补集，就是可能有人说话的区段；间隔很短的合并，两头各留一点余量。"""
+    regions, t = [], 0.0
+    for s, e in sorted(silence):
+        if s > t:
+            regions.append([t, s])
+        t = max(t, e)
+    if t < dur:
+        regions.append([t, dur])
+    merged: list[list[float]] = []
+    for s, e in regions:
+        if merged and s - merged[-1][1] < 0.8:
+            merged[-1][1] = e
+        else:
+            merged.append([s, e])
+    return [(max(0.0, s - 0.25), min(dur, e + 0.25)) for s, e in merged if e - s >= 0.3] or [(0.0, dur)]
 
 
 LANG_NAMES = {"zh": "中文", "en": "英文", "ja": "日语", "ko": "韩语", "yue": "粤语", "fr": "法语", "de": "德语", "es": "西班牙语"}
@@ -430,7 +586,10 @@ def write_transcript(ws: Workspace) -> Path:
         lang = LANG_NAMES.get(code, code)
         counts[lang] = counts.get(lang, 0) + 1
         lines += ["", f"## {m['name']} · {local_time(m):%Y-%m-%d %H:%M} · {lang}", ""]
-        lines += [f"[{mmss(x['start'])}–{mmss(x['end'])}] {x['text']}  " for x in tr["segments"]]
+        for x in tr["segments"]:
+            lines.append(f"[{mmss(x['start'])}–{mmss(x['end'])}] {x['text']}  ")
+            if x.get("translation"):
+                lines.append(f"　　→ {x['translation']}  ")
     stats = "，".join(f"{k} {v} 段" for k, v in counts.items())
     head = ["# 语音文字稿", "", f"共 {sum(counts.values())} 段视频有语音" + (f"（{stats}）" if stats else "") +
             "。时间是相对每段原视频的开头；按拍摄时间排序。"]
@@ -443,6 +602,212 @@ def write_transcript(ws: Workspace) -> Path:
 def cmd_transcript(ws: Workspace, args) -> None:
     out = write_transcript(ws)
     print(out.read_text())
+
+
+# ───────────────────────── translate：中文↔英文字幕翻译 ─────────────────────────
+
+TRANSLATE_SYSTEM = """你是字幕翻译。把每一行字幕翻译成{target}：口语、简洁、适合做字幕；地名和专有名词用通行译名。
+原文来自语音识别，可能有同音错字，请结合上下文按正确的意思翻译。translations 与输入的 lines 一一对应、数量相同。"""
+TRANSLATE_SCHEMA = {"type": "object", "properties": {"translations": {"type": "array", "items": {"type": "string"}}},
+                    "required": ["translations"], "additionalProperties": False}
+
+
+def target_lang(lang: str | None) -> str:
+    return "en" if lang in ("zh", "yue") else "zh"
+
+
+def has_claude_credentials() -> bool:
+    """环境变量或 `ant auth login` 的登录信息；都没有就不调用 Claude（避免每段都报一次错）。"""
+    return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+                or (Path.home() / ".config" / "anthropic").exists())
+
+
+def claude_client(offline: bool):
+    if offline:
+        return None
+    if not has_claude_credentials():
+        log("未设置 ANTHROPIC_API_KEY，不使用 Claude")
+        return None
+    try:
+        import anthropic
+        return anthropic.Anthropic()
+    except Exception as e:  # noqa: BLE001
+        log(f"无法初始化 Claude 客户端（{e}）")
+        return None
+
+
+def is_account_error(e: Exception) -> bool:
+    """账号/请求层面的错误（余额、权限等），后面的请求也会同样失败。"""
+    import anthropic
+    return (isinstance(e, (anthropic.AuthenticationError, anthropic.PermissionDeniedError, anthropic.BadRequestError))
+            or "authentication" in str(e).lower())
+
+
+def claude_translate(client, lines: list[str], target: str) -> list[str]:
+    resp = client.beta.messages.create(
+        model=MODEL,
+        max_tokens=16000,
+        system=TRANSLATE_SYSTEM.format(target="英文" if target == "en" else "简体中文"),
+        betas=["server-side-fallback-2026-07-01"],
+        fallbacks="default",
+        output_config={"effort": "low", "format": {"type": "json_schema", "schema": TRANSLATE_SCHEMA}},
+        messages=[{"role": "user", "content": json.dumps({"lines": lines}, ensure_ascii=False)}],
+    )
+    if resp.stop_reason == "refusal":
+        raise RuntimeError("模型拒绝了该请求")
+    out = json.loads(next(b.text for b in resp.content if b.type == "text"))["translations"]
+    if len(out) != len(lines):
+        raise RuntimeError(f"译文行数 {len(out)} 与原文 {len(lines)} 不一致")
+    return out
+
+
+def download_resumable(urls: list[str], name: str, attempts: int = 8) -> Path:
+    """断点续传下载到 ~/.cache/vidcut/；网络中断时从已下载的位置继续。"""
+    import urllib.request
+    dest = Path.home() / ".cache" / "vidcut" / name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(dest.suffix + ".part")
+    if dest.exists():
+        return dest
+    last = None
+    for attempt in range(attempts):
+        for url in urls:
+            have = part.stat().st_size if part.exists() else 0
+            # 下载服务器会拒绝 Python 默认的 User-Agent（403）
+            headers = {"User-Agent": "Mozilla/5.0 (vidcut)", **({"Range": f"bytes={have}-"} if have else {})}
+            req = urllib.request.Request(url, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    if have and r.status != 206:  # 服务器不支持续传，从头下载
+                        have = 0
+                        part.unlink(missing_ok=True)
+                    total = have + int(r.headers.get("Content-Length") or 0)
+                    with part.open("ab") as f:
+                        while chunk := r.read(1 << 20):
+                            f.write(chunk)
+                if total and part.stat().st_size >= total:
+                    part.replace(dest)
+                    return dest
+            except Exception as e:  # noqa: BLE001
+                last = e
+                log(f"  下载中断（{type(e).__name__}），已下载 {part.stat().st_size >> 20 if part.exists() else 0}MB，继续…")
+    raise RuntimeError(f"下载失败：{last}")
+
+
+_argos_ready: set = set()
+_argos_failed: dict = {}
+
+
+def argos_translate(lines: list[str], src: str, target: str) -> list[str]:
+    """离线翻译（Argos Translate）；第一次用某个方向时自动下载模型（网络不稳时重试 3 次）。"""
+    import argostranslate.package as pkg
+    import argostranslate.translate as tr
+    src = "zh" if src in ("zh", "yue") else src
+    if (src, target) in _argos_failed:  # 这一批里已经失败过，不再重复下载
+        raise RuntimeError(_argos_failed[src, target])
+    if (src, target) not in _argos_ready:
+        if (src, target) not in {(p.from_code, p.to_code) for p in pkg.get_installed_packages()}:
+            log(f"  下载离线翻译模型 {src}→{target}（只需一次）…")
+            try:
+                pkg.update_package_index()
+                cand = next((p for p in pkg.get_available_packages() if (p.from_code, p.to_code) == (src, target)), None)
+                if cand is None:
+                    raise RuntimeError(f"没有 {src}→{target} 的离线翻译模型")
+                pkg.install_from_path(download_resumable(cand.links, f"translate-{src}_{target}.argosmodel"))
+            except Exception as e:  # noqa: BLE001
+                _argos_failed[src, target] = f"{src}→{target} 模型下载失败：{e}"
+                raise RuntimeError(_argos_failed[src, target]) from e
+        _argos_ready.add((src, target))
+    return [tr.translate(x, src, target) for x in lines]
+
+
+def cmd_translate(ws: Workspace, args) -> None:
+    if not load_settings(ws)["subtitles"]["translate"]:
+        log("settings.json 里 subtitles.translate 为 false，跳过翻译")
+        return
+    # 每句按自己的语言决定翻译方向（同一段视频里可能中英都有）
+    jobs = []
+    for mid, m in ws.media().items():
+        path = ws.derived(mid) / "transcript.json"
+        tr = load_json(path)
+        if tr and tr["segments"]:
+            groups: dict[tuple[str, str], list[int]] = {}
+            for i, sg in enumerate(tr["segments"]):
+                if args.force or not sg.get("translation"):
+                    src = sg.get("lang") or tr.get("language") or "en"
+                    groups.setdefault((src, target_lang(src)), []).append(i)
+            jobs += [(m, path, tr, idx, src, target) for (src, target), idx in groups.items()]
+    if not jobs:
+        log("没有需要翻译的句子")
+        sync_project_subtitles(ws)
+        return
+
+    def apply(m, path, tr, idx, target, texts, source):
+        for i, t in zip(idx, texts):
+            tr["segments"][i].update(translation=t.strip(), translation_lang=target, translation_source=source)
+        save_json(path, tr)
+        log(f"  {m['name']:<16} → {target}：{tr['segments'][idx[0]]['translation'][:50]}")
+
+    client = claude_client(args.offline)
+    remaining = []
+    for m, path, tr, idx, src, target in jobs:
+        lines = [tr["segments"][i]["text"] for i in idx]
+        if client is not None:
+            try:
+                apply(m, path, tr, idx, target, claude_translate(client, lines, target), MODEL)
+                continue
+            except Exception as e:  # noqa: BLE001 —— 失败就交给离线翻译
+                log(f"  Claude 翻译失败（{type(e).__name__}: {getattr(e, 'message', e)}），改用离线翻译")
+                if is_account_error(e):
+                    client = None
+        remaining.append((m, path, tr, idx, src, target))
+
+    if remaining:
+        try:
+            import argostranslate  # noqa: F401
+        except ImportError:
+            # 清掉旧译文再交给带 argostranslate 的子进程，它只处理没有译文的句子
+            for _, path, tr, idx, _, _ in remaining:
+                for i in idx:
+                    tr["segments"][i]["translation"] = ""
+                save_json(path, tr)
+            # 第一次要安装离线翻译和下载模型，最多等 30 分钟；网络问题不应卡住整个流程
+            if not reexec_with("argostranslate", ["-w", str(ws.root.resolve()), "translate", "--offline"], timeout=1800):
+                log("无法离线翻译：请安装 uv，或运行 uv run --with argostranslate vidcut.py translate")
+            sync_project_subtitles(ws)
+            return
+        for m, path, tr, idx, src, target in remaining:
+            lines = [tr["segments"][i]["text"] for i in idx]
+            try:
+                apply(m, path, tr, idx, target, argos_translate(lines, src, target), "argos")
+            except Exception as e:  # noqa: BLE001
+                log(f"  {m['name']}: 离线翻译失败（{e}）")
+    write_transcript(ws)
+    sync_project_subtitles(ws)
+    log("翻译完成")
+
+
+def sync_project_subtitles(ws: Workspace) -> None:
+    """把新翻译填进 project.json 里还没有译文的字幕（不覆盖手动修改过的译文）。"""
+    project = load_json(ws.project_file)
+    if not project:
+        return
+    changed = 0
+    for it in project["tracks"][0]["items"]:
+        if it.get("type") != "clip" or not it.get("subtitles"):
+            continue
+        segs = load_json(ws.derived(it["media_id"]) / "transcript.json", {}).get("segments", [])
+        for sub in it["subtitles"]:
+            if sub.get("translation"):
+                continue
+            seg = next((s for s in segs if round(s["start"] * 1000) == sub["start_ms"] and s.get("translation")), None)
+            if seg:
+                sub["translation"] = seg["translation"]
+                changed += 1
+    if changed:
+        save_json(ws.project_file, project)
+        log(f"  project.json 里补上了 {changed} 句译文")
+
 
 
 # ───────────────────────── summarize（AI 初剪建议） ─────────────────────────
@@ -540,13 +905,7 @@ def claude_summary(client, m: dict, a: dict, segs: list[dict], heur: dict, d: Pa
 
 
 def cmd_summarize(ws: Workspace, args) -> None:
-    client = None
-    if not args.offline:
-        try:
-            import anthropic
-            client = anthropic.Anthropic()
-        except Exception as e:  # noqa: BLE001
-            log(f"无法初始化 Claude 客户端（{e}），改用规则摘要")
+    client = claude_client(args.offline)
     for mid, m in ws.media().items():
         d = ws.derived(mid)
         out = d / "summary.json"
@@ -639,12 +998,40 @@ def group_titles(kept: list[dict], groups: dict[str, str], summaries: dict) -> d
     return meta
 
 
-def cmd_roughcut(ws: Workspace, args) -> None:
-    if ws.project_file.exists() and not args.force:
-        sys.exit(f"{ws.project_file} 已存在（可能有手动修改）。加 --force 覆盖。")
+def split_parts(in_ms: int, out_ms: int, lc: dict) -> list[tuple[int, int, str]]:
+    """长视频只取开头和结尾；短视频整段保留。"""
+    th, head, tail = lc["threshold_s"] * 1000, round(lc["head_s"] * 1000), round(lc["tail_s"] * 1000)
+    if th <= 0 or out_ms - in_ms <= th or head + tail >= out_ms - in_ms:
+        return [(in_ms, out_ms, "")]
+    return [(in_ms, in_ms + head, "开头"), (out_ms - tail, out_ms, "结尾")]
+
+
+def auto_volume(src: Path, a_ms: int, b_ms: int, has_speech: bool, au: dict) -> tuple[float, float | None]:
+    """按这一段的响度算增益：说话的段落对齐到 speech_lufs，环境声对齐到 ambient_lufs（少量提升）。"""
+    lufs = measure_lufs(src, a_ms / 1000, (b_ms - a_ms) / 1000)
+    if lufs is None:  # 静音或几乎没声音：不放大底噪
+        return 0.0, None
+    target = au["speech_lufs"] if has_speech else au["ambient_lufs"]
+    hi = au["max_gain_db"] if has_speech else min(au["max_gain_db"], au["ambient_max_boost_db"])
+    gain = max(-au["max_gain_db"], min(hi, target - lufs))
+    return round(gain * 2) / 2, round(lufs, 1)
+
+
+def clip_subtitles(segs: list[dict], a_ms: int, b_ms: int) -> list[dict]:
+    """与 [a_ms, b_ms) 重叠的语音句子；时间是原视频里的毫秒，和 in_ms/out_ms 一致。"""
+    return [{"start_ms": round(s["start"] * 1000), "end_ms": round(s["end"] * 1000),
+             "text": s["text"], "translation": s.get("translation", "")}
+            for s in segs if s["end"] * 1000 > a_ms and s["start"] * 1000 < b_ms]
+
+
+def transition(kind: str, seconds: float) -> dict | None:
+    return None if kind == "cut" else {"type": kind, "duration_ms": round(seconds * 1000)}
+
+
+def build_project(ws: Workspace, st: dict) -> dict:
     media = ws.media()
     ordered = sorted(media.values(), key=lambda m: m["created"])
-    groups = assign_groups(ordered, args.group_km)
+    groups = assign_groups(ordered, st["titles"]["group_km"])
     summaries = {}
     for m in ordered:
         if (s := load_json(ws.derived(m["id"]) / "summary.json")) is None:
@@ -654,52 +1041,69 @@ def cmd_roughcut(ws: Workspace, args) -> None:
     excluded = [{"media_id": m["id"], "name": m["name"], "reason": summaries[m["id"]]["reason"]}
                 for m in ordered if not summaries[m["id"]]["keep"]]
     meta = group_titles(kept, groups, summaries)
-    fade_ms = args.fade_ms
+    trs, ti, au = st["transitions"], st["titles"], st["audio"]
+    normal_tr = transition(trs["type"], trs["duration_s"])
+    group_tr = transition(trs["group_type"], trs["group_duration_s"])
+    part_tr = transition(trs["part_type"], trs["part_duration_s"])
 
     items: list[dict] = []
-    if args.titles and kept:
+    if ti["opening"] and kept:
         d0, d1 = local_date(kept[0]), local_date(kept[-1])
-        items.append({"id": "t_open", "type": "title", "role": "opening", "text": args.name,
+        items.append({"id": "t_open", "type": "title", "role": "opening", "text": st["name"],
                       "subtitle": f"{d0:%Y.%m.%d}" + (f" – {d1:%m.%d}" if d1 != d0 else ""),
-                      "duration_ms": 3000, "background": "blur_next",
-                      "fade_in_ms": 500, "fade_out_ms": 500})
+                      "duration_ms": 3000, "background": "blur_next", "fade_in_ms": 0, "fade_out_ms": 0})
     last_g = last_day = last_title = None
     for m in kept:
         s, g = summaries[m["id"]], groups[m["id"]]
         gm = meta[g]
         new_group = g != last_g
+        into = normal_tr
         if new_group:
-            if items and items[-1]["type"] == "clip":
-                items[-1]["fade_out_ms"] = fade_ms
-            # 换了一天或换了地名就放标题卡；同一天、地名也相同的分组之间放黑场间隔
-            if args.titles and (gm["date"] != last_day or gm["title"] != last_title):
+            into = group_tr
+            if ti["groups"] and (gm["date"] != last_day or gm["title"] != last_title):
                 items.append({"id": f"t{len(items)}", "type": "title", "text": gm["title"],
-                              "subtitle": gm["subtitle"], "duration_ms": 2000,
-                              "background": "blur_next", "fade_in_ms": 400, "fade_out_ms": 400})
-            elif last_g is not None:
-                items.append({"id": f"g{len(items)}", "type": "gap",
-                              "duration_ms": args.gap_ms, "background": "black"})
-        clip = {
-            "id": f"c{len(items)}", "type": "clip", "media_id": m["id"], "name": m["name"],
-            "in_ms": s["in_ms"], "out_ms": s["out_ms"], "volume_db": 0,
-            "fade_in_ms": fade_ms if new_group else 0, "fade_out_ms": 0,
-            "group": gm["title"],
-            "ai": {"title": s["title"], "summary": s["summary"], "keywords": s["keywords"],
-                   "reason": s["reason"], "place": s.get("place", ""), "source": s["source"]},
-        }
-        length = s["out_ms"] - s["in_ms"]
-        # 规则兜底时的“标题”只是文件名，不适合放到画面上
-        if args.captions and s["source"] != "heuristic" and s["title"] and length > 1500:
-            clip["caption"] = {"text": s["title"], "position": "bottom",
-                               "start_ms": 300, "end_ms": min(length, 3800)}
-        items.append(clip)
+                              "subtitle": gm["subtitle"], "duration_ms": 2000, "background": "blur_next",
+                              "fade_in_ms": 0, "fade_out_ms": 0, "transition": group_tr})
+                into = normal_tr
+            elif last_g is not None and group_tr is None:  # 不用转场时，分组之间留一点黑场
+                items.append({"id": f"g{len(items)}", "type": "gap", "duration_ms": 1000, "background": "black"})
+        segs = load_json(ws.derived(m["id"]) / "transcript.json", {}).get("segments", [])
+        proxy = ws.derived(m["id"]) / "proxy.mp4"
+        parts = split_parts(s["in_ms"], s["out_ms"], st["long_clips"])
+        for k, (a, b, label) in enumerate(parts):
+            subs = clip_subtitles(segs, a, b)
+            clip = {"id": f"c{len(items)}", "type": "clip", "media_id": m["id"], "name": m["name"],
+                    "in_ms": a, "out_ms": b, "volume_db": 0, "fade_in_ms": 0, "fade_out_ms": 0}
+            if label:
+                clip["part"] = label
+            tr = part_tr if k > 0 else into
+            if items and tr:
+                clip["transition"] = tr
+            if au["auto_volume"]:
+                gain, lufs = auto_volume(proxy, a, b, bool(subs), au)
+                clip["volume_db"] = gain
+                clip["auto"] = {"volume_db": gain, "measured_lufs": lufs, "speech": bool(subs)}
+            if subs:
+                clip["subtitles"] = subs
+            clip["group"] = gm["title"]
+            clip["ai"] = {"title": s["title"], "summary": s["summary"], "keywords": s["keywords"],
+                          "reason": s["reason"], "place": s.get("place", ""), "source": s["source"]}
+            # 规则兜底时的“标题”只是文件名，不适合放到画面上
+            if ti["captions"] and k == 0 and s["source"] != "heuristic" and s["title"] and b - a > 1500:
+                clip["caption"] = {"text": s["title"], "position": "bottom", "start_ms": 300, "end_ms": min(b - a, 3800)}
+            items.append(clip)
         last_g, last_day, last_title = g, gm["date"], gm["title"]
-    if items and items[-1]["type"] == "clip":
-        items[-1]["fade_out_ms"] = fade_ms
-    project = {
+    if items:  # 整片从黑场淡入、淡出到黑场
+        items[0]["fade_in_ms"] = min(600, timeline_ms(items[:1]) // 3)
+        items[-1]["fade_out_ms"] = min(800, timeline_ms(items[-1:]) // 3)
+    out = st["output"]
+    return {
         "schema_version": SCHEMA_VERSION,
-        "project": {"name": args.name, "resolution": [1920, 1080], "fps": 30,
-                    "portrait_mode": "blur_fill", "loudness_lufs": -16},
+        "generated_from": "settings.json",
+        "project": {"name": st["name"], "resolution": out["resolution"], "fps": out["fps"],
+                    "preview_resolution": out["preview_resolution"], "portrait_mode": out["portrait_mode"],
+                    "loudness_lufs": au["final_lufs"],
+                    "subtitles": {"burn_in": st["subtitles"]["burn_in"], "show": st["subtitles"]["show"]}},
         "tracks": [
             {"id": "main", "kind": "video", "items": items},
             {"id": "music", "kind": "audio", "items": []},
@@ -707,31 +1111,55 @@ def cmd_roughcut(ws: Workspace, args) -> None:
         ],
         "excluded": excluded,
     }
-    save_json(ws.project_file, project)
 
-    lines = [f"# {args.name} · 初剪", "", "| # | 分组 | 片段 | 区间 | 标题 | 摘要 |", "|---|---|---|---|---|---|"]
-    log(f"\n初剪：{args.name}")
+
+def cmd_roughcut(ws: Workspace, args) -> None:
+    if ws.project_file.exists() and not args.force:
+        sys.exit(f"{ws.project_file} 已存在（可能有手动修改）。加 --force 覆盖。")
+    st = load_settings(ws, args.name)
+    # 命令行参数只对这一次生效，不写回 settings.json
+    if args.group_km is not None:
+        st["titles"]["group_km"] = args.group_km
+    if args.titles is False:
+        st["titles"]["opening"] = st["titles"]["groups"] = False
+    if args.captions:
+        st["titles"]["captions"] = True
+    project = build_project(ws, st)
+    save_json(ws.project_file, project)
+    items, excluded = project["tracks"][0]["items"], project["excluded"]
+
+    lines = [f"# {st['name']} · 初剪", "", "| # | 分组 | 片段 | 区间 | 音量 | 标题 | 摘要 |", "|---|---|---|---|---|---|---|"]
+    log(f"\n初剪：{st['name']}")
     for it in items:
+        tr = it.get("transition")
+        arrow = f"   ⤳ {tr['type']} {tr['duration_ms']/1000:.1f}s" if tr else ""
+        if arrow:
+            log(arrow)
         if it["type"] == "gap":
             log(f"   ── 间隔 {it['duration_ms']/1000:.1f}s ──")
         elif it["type"] == "title":
             log(f"   ▣ 标题卡 {it['duration_ms']/1000:.1f}s：{it['text']}  {it['subtitle']}")
-            lines.append(f"| {it['id']} | | 标题卡 | {it['duration_ms']/1000:.1f}s | {it['text']} | {it['subtitle']} |")
+            lines.append(f"| {it['id']} | | 标题卡 | {it['duration_ms']/1000:.1f}s | | {it['text']} | {it['subtitle']} |")
         else:
-            cap = f"  [字幕：{it['caption']['text']}]" if "caption" in it else ""
-            log(f"  {it['id']:>3}  {it['group']}  {it['name']:<14} "
-                f"{it['in_ms']/1000:5.1f}–{it['out_ms']/1000:5.1f}s  {it['ai']['title']}{cap}")
-            lines.append(f"| {it['id']} | {it['group']} | {it['name']} | "
-                         f"{it['in_ms']/1000:.1f}–{it['out_ms']/1000:.1f}s | {it['ai']['title']} | "
+            part = f"（{it['part']}）" if it.get("part") else ""
+            vol = f"{it['volume_db']:+.1f}dB"
+            subs = it.get("subtitles", [])
+            log(f"  {it['id']:>3}  {it['group']}  {it['name']}{part:<6} {it['in_ms']/1000:5.1f}–{it['out_ms']/1000:5.1f}s  "
+                f"音量 {vol:>7}  {it['ai']['title']}" + (f"  字幕 {len(subs)} 句" if subs else ""))
+            lines.append(f"| {it['id']} | {it['group']} | {it['name']}{part} | "
+                         f"{it['in_ms']/1000:.1f}–{it['out_ms']/1000:.1f}s | {vol} | {it['ai']['title']} | "
                          f"{it['ai']['summary']} |")
+            for sub in subs:
+                lines.append(f"| | | | | | 　{sub['text']} | {sub.get('translation', '')} |")
     for e in excluded:
         log(f"   ✕   {e['name']:<14} 已排除：{e['reason']}")
     lines += ["", "## 已排除", *[f"- {e['name']}：{e['reason']}" for e in excluded]]
     (ws.root / "roughcut.md").write_text("\n".join(lines) + "\n")
-    log(f"总时长约 {timeline_ms(items)/1000:.1f}s → {ws.project_file}（可直接编辑后再 render）")
+    log(f"项目 → {ws.project_file}（可直接编辑后再 render）")
 
 
 def timeline_ms(items: list[dict]) -> int:
+    """不计转场重叠的总时长。"""
     return sum(it["out_ms"] - it["in_ms"] if it["type"] == "clip" else it["duration_ms"] for it in items)
 
 
@@ -753,6 +1181,7 @@ FONT_CANDIDATES = [
     "C:/Windows/Fonts/msyh.ttc",
 ]
 _fonts: dict = {}
+TEXT_STYLE = 2  # 文字排版规则（换行、字号、位置）改了就加 1，让缓存的文字图片和片段重新生成
 
 
 def load_font(size: int, bold: bool):
@@ -781,22 +1210,25 @@ def load_font(size: int, bold: bool):
 
 
 def wrap_text(draw, text: str, font, max_w: float, max_lines: int = 3) -> list[str]:
+    """按宽度换行：中文可以在任意字之间断开，英文只在单词之间断开。"""
     lines, cur = [], ""
-    for ch in text.strip():
-        if ch == "\n":
-            lines.append(cur)
+    for tok in re.findall(r"\n|[A-Za-z0-9'’\-]+[.,!?;:]*|\s+|.", text.strip()):
+        if tok == "\n":
+            lines.append(cur.rstrip())
             cur = ""
-        elif cur and draw.textlength(cur + ch, font=font) > max_w:
-            lines.append(cur)
-            cur = ch
+        elif cur.strip() and draw.textlength(cur + tok, font=font) > max_w:
+            lines.append(cur.rstrip())
+            cur = tok.lstrip()
         else:
-            cur += ch
-    lines.append(cur)
+            cur += tok
+    lines.append(cur.rstrip())
     return [ln for ln in lines if ln][:max_lines]
 
 
-def text_png(kind: str, text: str, subtitle: str, position: str, W: int, H: int, out: Path) -> Path:
-    """把文字画成全画幅透明 PNG，渲染时叠加到画面上（不依赖 ffmpeg 的 drawtext）。"""
+def text_png(kind: str, text: str, subtitle: str, position: str, W: int, H: int, out: Path,
+             raise_bottom: bool = False) -> Path:
+    """把文字画成全画幅透明 PNG，渲染时叠加到画面上（不依赖 ffmpeg 的 drawtext）。
+    kind: title 标题卡 / caption 画面文字 / subtitle 语音字幕（text 原文，subtitle 译文）。"""
     if out.exists():
         return out
     from PIL import Image, ImageDraw, ImageFilter
@@ -826,13 +1258,26 @@ def text_png(kind: str, text: str, subtitle: str, position: str, W: int, H: int,
         for ln, f, yy in pos:
             fill = (255, 255, 255, 255) if f is f1 else (235, 235, 235, 255)
             draw.text((W / 2, yy), ln, font=f, fill=fill, anchor="mt")
+    elif kind == "subtitle":
+        # 底部两层：原文（白）+ 译文（浅黄），黑色描边保证任何画面上都看得清
+        f1, f2 = load_font(round(H * 0.046), True), load_font(round(H * 0.037), False)
+        l1 = wrap_text(draw, text, f1, W * 0.86, 2) if text else []
+        l2 = wrap_text(draw, subtitle, f2, W * 0.86, 2) if subtitle else []
+        lh1, lh2 = f1.size * 1.3, f2.size * 1.35
+        y = H * 0.955 - (lh1 * len(l1) + lh2 * len(l2))
+        for lines, f, lh, fill in ((l1, f1, lh1, (255, 255, 255, 255)), (l2, f2, lh2, (255, 228, 140, 255))):
+            for ln in lines:
+                draw.text((W / 2, y), ln, font=f, fill=fill, anchor="mt",
+                          stroke_width=max(2, round(f.size * 0.09)), stroke_fill=(0, 0, 0, 235))
+                y += lh
     else:
         f = load_font(round(H * 0.048), True)
         lines = wrap_text(draw, text, f, W * 0.8, 2)
         lh, pad = f.size * 1.35, f.size * 0.45
         box_w = max(draw.textlength(ln, font=f) for ln in lines) + pad * 2
         box_h = lh * len(lines) + pad * 1.2
-        cy = {"top": H * 0.13, "center": H * 0.5}.get(position, H * 0.85)
+        # 下方的画面文字在有语音字幕时上移，避免互相遮挡
+        cy = {"top": H * 0.13, "center": H * 0.5}.get(position, H * (0.70 if raise_bottom else 0.85))
         x0, y0 = W / 2 - box_w / 2, cy - box_h / 2
         draw.rounded_rectangle((x0, y0, x0 + box_w, y0 + box_h), radius=f.size * 0.3, fill=(0, 0, 0, 130))
         for i, ln in enumerate(lines):
@@ -843,7 +1288,7 @@ def text_png(kind: str, text: str, subtitle: str, position: str, W: int, H: int,
 
 def render_clip(it: dict, m: dict, src: Path, W: int, H: int, F: int, mode: str,
                 hdr_chain: str | None, preset: str, crf: str, out: Path,
-                caption_png: Path | None = None) -> None:
+                caption_png: Path | None = None, subs: list[tuple[Path, float, float]] = ()) -> None:
     length = (it["out_ms"] - it["in_ms"]) / 1000
     fi, fo = it.get("fade_in_ms", 0) / 1000, it.get("fade_out_ms", 0) / 1000
     cmd = ["-ss", f"{it['in_ms']/1000:.3f}", "-t", f"{length:.3f}", "-i", str(src)]
@@ -851,9 +1296,16 @@ def render_clip(it: dict, m: dict, src: Path, W: int, H: int, F: int, mode: str,
     if not m["has_audio"]:
         cmd += ["-f", "lavfi", "-t", f"{length:.3f}", "-i", "anullsrc=r=48000:cl=stereo"]
         n_inputs += 1
+    still = ["-loop", "1", "-framerate", str(F), "-t", f"{length:.3f}", "-i"]
     if caption_png:
-        cmd += ["-loop", "1", "-framerate", str(F), "-t", f"{length:.3f}", "-i", str(caption_png)]
+        cmd += [*still, str(caption_png)]
         cap_idx = n_inputs
+        n_inputs += 1
+    sub_idx = []
+    for png, _, _ in subs:
+        cmd += [*still, str(png)]
+        sub_idx.append(n_inputs)
+        n_inputs += 1
     pre = f"{hdr_chain}," if hdr_chain else ""
     same_aspect = abs(m["width"] / m["height"] - W / H) < 0.01
     if mode == "blur_fill" and not same_aspect:
@@ -873,6 +1325,10 @@ def render_clip(it: dict, m: dict, src: Path, W: int, H: int, F: int, mode: str,
         v += (f"[base];[{cap_idx}:v]format=rgba,fade=t=in:st={s:.3f}:d={fd:.3f}:alpha=1,"
               f"fade=t=out:st={e - fd:.3f}:d={fd:.3f}:alpha=1[cap];"
               f"[base][cap]overlay=0:0:enable='between(t,{s:.3f},{e:.3f})',format=yuv420p")
+    for j, ((_, s, e), k) in enumerate(zip(subs, sub_idx)):
+        v += f"[sb{j}];[sb{j}][{k}:v]overlay=0:0:enable='between(t,{s:.3f},{e:.3f})'"
+    if subs:
+        v += ",format=yuv420p"
     if fi:
         v += f",fade=t=in:st=0:d={fi}"
     if fo:
@@ -926,8 +1382,48 @@ def render_gap(it: dict, W: int, H: int, F: int, preset: str, out: Path) -> None
 
 
 def srt_time(sec: float) -> str:
-    ms = int(round(sec * 1000))
+    ms = int(round(max(0.0, sec) * 1000))
     return f"{ms // 3600000:02}:{ms // 60000 % 60:02}:{ms // 1000 % 60:02},{ms % 1000:03}"
+
+
+def join_segments(segs: list[dict], out: Path, F: int, preset: str, crf: str) -> None:
+    """按顺序拼接；有转场的地方用 xfade（画面）+ acrossfade（声音）重叠过渡。"""
+    inputs, fc = [], []
+    for i, sg in enumerate(segs):
+        d = sg["dur"]
+        inputs += ["-i", str(sg["path"])]
+        # 统一时间基，音频按画面时长补齐/截断，多段拼接后不会音画漂移
+        fc.append(f"[{i}:v]fps={F},settb=AVTB,setpts=PTS-STARTPTS,format=yuv420p[v{i}]")
+        fc.append(f"[{i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,"
+                  f"apad=whole_dur={d:.3f},atrim=0:{d:.3f},asetpts=PTS-STARTPTS[a{i}]")
+    v, a, acc = "[v0]", "[a0]", segs[0]["dur"]
+    for i in range(1, len(segs)):
+        sg = segs[i]
+        if sg["td"] > 0:
+            td = sg["td"]
+            fc.append(f"{v}[v{i}]xfade=transition={sg['transition']['type']}:duration={td:.3f}:offset={acc - td:.3f}[xv{i}]")
+            fc.append(f"{a}[a{i}]acrossfade=d={td:.3f}:c1=tri:c2=tri[xa{i}]")
+            acc += sg["dur"] - td
+        else:
+            fc.append(f"{v}{a}[v{i}][a{i}]concat=n=2:v=1:a=1[xv{i}][xa{i}]")
+            acc += sg["dur"]
+        v, a = f"[xv{i}]", f"[xa{i}]"
+    script = out.with_suffix(".filter.txt")
+    script.write_text(";\n".join(fc))
+    # 从文件读滤镜图：ffmpeg 7+ 用 -/filter_complex，旧版本（如 Debian 的 5.1）用 -filter_complex_script
+    opt = "-/filter_complex" if ffmpeg_major() >= 7 else "-filter_complex_script"
+    ffmpeg(*inputs, opt, str(script), "-map", v, "-map", a, "-r", str(F),
+           "-c:v", "libx264", "-preset", preset, "-crf", crf, "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-b:a", "192k", "-ar", "48000", str(out))
+    script.unlink(missing_ok=True)
+
+
+def clip_subs_for_render(ws: Workspace, it: dict) -> list[dict]:
+    """片段的字幕：优先用 project.json 里的（可能手改过），旧项目没有就从转录里取。"""
+    if "subtitles" in it:
+        return it["subtitles"]
+    segs = load_json(ws.derived(it["media_id"]) / "transcript.json", {}).get("segments", [])
+    return clip_subtitles(segs, it["in_ms"], it["out_ms"])
 
 
 def cmd_render(ws: Workspace, args) -> None:
@@ -938,12 +1434,15 @@ def cmd_render(ws: Workspace, args) -> None:
         sys.exit(f"project.json 的 schema_version 不是 {SCHEMA_VERSION}")
     media = ws.media()
     cfg = project["project"]
-    W, H = cfg["resolution"]
     F = cfg["fps"]
     if args.draft:
-        W, H, preset, crf = 640, 360, "ultrafast", "30"
+        W, H = cfg.get("preview_resolution", [960, 540])
+        preset, crf = "veryfast", "26"
     else:
-        preset, crf = "medium", "20"
+        W, H = cfg["resolution"]
+        preset, crf = "medium", "18"
+    sub_cfg = cfg.get("subtitles", {"burn_in": False, "show": "both"})
+    show = sub_cfg.get("show", "both")
     hdr_chain = hdr_to_sdr_chain()
     seg_dir = ws.root / "derived" / "segments"
     seg_dir.mkdir(parents=True, exist_ok=True)
@@ -954,80 +1453,105 @@ def cmd_render(ws: Workspace, args) -> None:
             sys.exit(f"找不到素材: {src}")
         return src
 
+    def sub_lines(sub: dict) -> tuple[str, str]:
+        orig = sub.get("text", "").strip() if show in ("both", "original") else ""
+        trans = sub.get("translation", "").strip() if show in ("both", "translation") else ""
+        return orig, trans
+
     items = project["tracks"][0]["items"]
-    segments, srt, offset, n = [], [], 0.0, 0
+    segs: list[dict] = []
     for idx, it in enumerate(items):
+        srt_rel: list[tuple[float, float, str]] = []
         if it["type"] == "gap":
             out = seg_dir / f"gap_{seg_key(it, W, H, F)}.mp4"
             if not out.exists():
                 render_gap(it, W, H, F, preset, out)
-            segments.append(out)
-            offset += it["duration_ms"] / 1000
-            continue
-        if it["type"] == "title":
+        elif it["type"] == "title":
             bg = None
             if it.get("background") == "blur_next":
                 nxt = next((x for x in items[idx + 1:] if x["type"] == "clip"), None)
                 if nxt:
-                    nm = media[nxt["media_id"]]
                     t = min(nxt["in_ms"] + 500, nxt["out_ms"] - 100) / 1000
-                    bg = (source(nm), t)
+                    bg = (source(media[nxt["media_id"]]), t)
             fields = {k: it.get(k) for k in ("text", "subtitle", "duration_ms", "fade_in_ms", "fade_out_ms")}
-            key = seg_key(fields, bg and [str(bg[0]), bg[1]], W, H, F, args.draft)
+            key = seg_key(fields, bg and [str(bg[0]), bg[1]], W, H, F, args.draft, TEXT_STYLE)
             out = seg_dir / f"title_{key}.mp4"
             if out.exists():
-                log(f"  {it['id']:>3} 标题卡           缓存命中")
+                log(f"  {it['id']:>5} 标题卡           缓存命中")
             else:
-                log(f"  {it['id']:>3} 标题卡           渲染「{it['text']}」")
+                log(f"  {it['id']:>5} 标题卡           渲染「{it['text']}」")
                 png = text_png("title", it["text"], it.get("subtitle", ""), "center", W, H,
-                               seg_dir / f"text_{seg_key('title', it['text'], it.get('subtitle', ''), W, H)}.png")
+                               seg_dir / f"text_{seg_key('title', it['text'], it.get('subtitle', ''), W, H, TEXT_STYLE)}.png")
                 render_title(it, bg, png, W, H, F, preset, crf, out)
-            segments.append(out)
-            offset += it["duration_ms"] / 1000
-            continue
-        if it["type"] != "clip":
-            sys.exit(f"{it.get('id')}: 未知类型 {it['type']}")
-        m = media[it["media_id"]]
-        src = source(m)
-        if it["out_ms"] <= it["in_ms"]:
-            sys.exit(f"{it['id']}: out_ms 必须大于 in_ms")
-        cap = it.get("caption") if (it.get("caption") or {}).get("text", "").strip() else None
-        render_fields = {k: it.get(k) for k in
-                         ("media_id", "in_ms", "out_ms", "volume_db", "fade_in_ms", "fade_out_ms")}
-        key = seg_key(render_fields, cap, W, H, F, cfg["portrait_mode"], args.draft, str(src))
-        out = seg_dir / f"clip_{key}.mp4"
-        if out.exists():
-            log(f"  {it['id']:>3} {m['name']:<16} 缓存命中")
+        elif it["type"] == "clip":
+            m = media[it["media_id"]]
+            src = source(m)
+            if it["out_ms"] <= it["in_ms"]:
+                sys.exit(f"{it['id']}: out_ms 必须大于 in_ms")
+            length = (it["out_ms"] - it["in_ms"]) / 1000
+            # 语音字幕：换算成相对这一段开头的时间
+            burn = []
+            for sub in clip_subs_for_render(ws, it):
+                s = max(sub["start_ms"], it["in_ms"]) / 1000 - it["in_ms"] / 1000
+                e = min(sub["end_ms"], it["out_ms"]) / 1000 - it["in_ms"] / 1000
+                orig, trans = sub_lines(sub)
+                if e - s < 0.2 or not (orig or trans):
+                    continue
+                srt_rel.append((s, e, "\n".join(x for x in (orig, trans) if x)))
+                if sub_cfg.get("burn_in"):
+                    burn.append((orig, trans, round(s, 3), round(min(e, length), 3)))
+            cap = it.get("caption") if (it.get("caption") or {}).get("text", "").strip() else None
+            render_fields = {k: it.get(k) for k in
+                             ("media_id", "in_ms", "out_ms", "volume_db", "fade_in_ms", "fade_out_ms")}
+            key = seg_key(render_fields, cap, burn, W, H, F, cfg["portrait_mode"], args.draft, str(src), TEXT_STYLE)
+            out = seg_dir / f"clip_{key}.mp4"
+            label = f"{m['name']}" + (f"（{it['part']}）" if it.get("part") else "")
+            if out.exists():
+                log(f"  {it['id']:>5} {label:<16} 缓存命中")
+            else:
+                log(f"  {it['id']:>5} {label:<16} 渲染 {it['in_ms']/1000:.1f}–{it['out_ms']/1000:.1f}s"
+                    + (f"  音量 {it.get('volume_db', 0):+g}dB" if it.get("volume_db") else "")
+                    + (f"  字幕 {len(burn)} 句" if burn else "") + (f"  文字「{cap['text']}」" if cap else ""))
+                chain = hdr_chain if (m["hdr"] and not args.draft) else None
+                png = None
+                if cap:
+                    pos = cap.get("position", "bottom")
+                    png = text_png("caption", cap["text"], "", pos, W, H,
+                                   seg_dir / f"text_{seg_key('caption', cap['text'], pos, bool(burn), W, H, TEXT_STYLE)}.png",
+                                   raise_bottom=bool(burn))
+                sub_pngs = [(text_png("subtitle", o, t, "bottom", W, H,
+                                      seg_dir / f"sub_{seg_key('subtitle', o, t, W, H, TEXT_STYLE)}.png"), s, e)
+                            for o, t, s, e in burn]
+                render_clip(it, m, src, W, H, F, cfg["portrait_mode"], chain, preset, crf, out, png, sub_pngs)
         else:
-            log(f"  {it['id']:>3} {m['name']:<16} 渲染 {it['in_ms']/1000:.1f}–{it['out_ms']/1000:.1f}s"
-                + (f"  字幕「{cap['text']}」" if cap else ""))
-            chain = hdr_chain if (m["hdr"] and not args.draft) else None
-            png = None
-            if cap:
-                pos = cap.get("position", "bottom")
-                png = text_png("caption", cap["text"], "", pos, W, H,
-                               seg_dir / f"text_{seg_key('caption', cap['text'], pos, W, H)}.png")
-            render_clip(it, m, src, W, H, F, cfg["portrait_mode"], chain, preset, crf, out, png)
-        segments.append(out)
-        # 字幕：把转录时间映射到成片时间线
-        t_in, t_out = it["in_ms"] / 1000, it["out_ms"] / 1000
-        tr = load_json(ws.derived(m["id"]) / "transcript.json", {"segments": []})
-        for s in tr["segments"]:
-            a, b = max(s["start"], t_in), min(s["end"], t_out)
-            if b - a > 0.3:
-                n += 1
-                srt.append(f"{n}\n{srt_time(offset + a - t_in)} --> "
-                           f"{srt_time(offset + b - t_in)}\n{s['text']}\n")
-        offset += t_out - t_in
+            sys.exit(f"{it.get('id')}: 未知类型 {it['type']}")
+        segs.append({"path": out, "dur": media_duration(out), "transition": it.get("transition") if idx else None,
+                     "srt": srt_rel})
+
+    # 转场时长不超过相邻两段的一半；算出每段在成片里的起点
+    t = 0.0
+    for i, sg in enumerate(segs):
+        tr, td = sg["transition"], 0.0
+        if i and tr and tr.get("type", "cut") != "cut":
+            td = min(tr.get("duration_ms", 600) / 1000, segs[i - 1]["dur"] / 2, sg["dur"] / 2)
+            td = td if td >= 0.05 else 0.0
+        sg["td"] = td
+        sg["start"] = t - td
+        t = sg["start"] + sg["dur"]
+    total = t
 
     ws.out.mkdir(parents=True, exist_ok=True)
     stem = re.sub(r"[^\w\-]+", "_", cfg["name"]).strip("_") or "output"
-    stem += "_draft" if args.draft else ""
-    concat_list = seg_dir / "concat.txt"
-    concat_list.write_text("".join(f"file '{p.resolve()}'\n" for p in segments))
+    stem += "_preview" if args.draft else ""
     joined = seg_dir / f"{stem}_joined.mp4"
-    log("  拼接…")
-    ffmpeg("-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(joined))
+    if any(sg["td"] for sg in segs):
+        log(f"  拼接并生成 {sum(1 for sg in segs if sg['td'])} 处转场…")
+        join_segments(segs, joined, F, preset, crf)
+    else:
+        log("  拼接…")
+        concat_list = seg_dir / "concat.txt"
+        concat_list.write_text("".join(f"file '{sg['path'].resolve()}'\n" for sg in segs))
+        ffmpeg("-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(joined))
 
     final = ws.out / f"{stem}.mp4"
     target = cfg.get("loudness_lufs", -16)
@@ -1042,24 +1566,28 @@ def cmd_render(ws: Workspace, args) -> None:
     ffmpeg("-i", str(joined), "-c:v", "copy", "-af", ln2, "-ar", "48000",
            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(final))
     joined.unlink(missing_ok=True)
+
+    srt = []
+    for sg in segs:
+        for s, e, text in sg["srt"]:
+            srt.append(f"{len(srt) + 1}\n{srt_time(sg['start'] + s)} --> {srt_time(sg['start'] + e)}\n{text}\n")
     if srt:
         (ws.out / f"{stem}.srt").write_text("\n".join(srt))
-    log(f"完成：{final}  （{offset:.1f}s，{W}x{H}）" + (f"  字幕：{stem}.srt" if srt else ""))
+    log(f"完成：{final}  （{total:.1f}s，{W}x{H}）" + (f"  字幕：{stem}.srt" if srt else ""))
 
 
-# ───────────────────────── all / CLI ─────────────────────────
+# ───────────────────────── update / auto / all ─────────────────────────
 
-def cmd_update(ws: Workspace, args) -> None:
-    """加入新素材：重新扫描以前扫过的目录（以及可选的新目录），只处理新增视频。不改 project.json。"""
+def scan_sources(ws: Workspace, args, extra: str | None) -> set[str]:
+    """重新扫描以前扫过的目录（以及可选的新目录）；返回扫描前已有的媒体 ID。"""
     data = load_json(ws.media_file) or {}
     # 旧版本的 media.json 没记录扫描目录，就用已有视频所在的目录
     folders = list(data.get("sources") or
                    sorted({str(Path(m["path"]).parent) for m in data.get("media", {}).values()}))
-    if args.folder:
-        folders.append(str(Path(args.folder).expanduser().resolve()))
+    if extra:
+        folders.append(str(Path(extra).expanduser().resolve()))
     if not folders:
-        sys.exit("还没有扫描过任何目录，请指定素材目录：vidcut.py update <目录>")
-    before = set(data.get("media", {}))
+        sys.exit("还没有扫描过任何目录，请指定素材目录")
     for f in dict.fromkeys(folders):
         if not Path(f).is_dir():
             log(f"  跳过不存在的目录 {f}")
@@ -1069,17 +1597,70 @@ def cmd_update(ws: Workspace, args) -> None:
             cmd_scan(ws, args)
         except SystemExit as e:  # 某个目录暂时没有视频，不影响其他目录
             log(f"  {e}")
-    for step in (cmd_proxy, cmd_analyze, cmd_transcribe, cmd_summarize):
+    return set(data.get("media", {}))
+
+
+def analysis_steps(ws: Workspace, args) -> None:
+    for step in (cmd_proxy, cmd_analyze, cmd_transcribe, cmd_translate, cmd_summarize):
         log(f"\n▶ {step.__name__.removeprefix('cmd_')}")
         step(ws, args)
+
+
+def cmd_update(ws: Workspace, args) -> None:
+    """加入新素材：重新扫描以前扫过的目录（以及可选的新目录），只处理新增视频。不改 project.json。"""
+    before = scan_sources(ws, args, args.folder)
+    analysis_steps(ws, args)
     new = [m["name"] for mid, m in ws.media().items() if mid not in before]
     log(f"\n新增 {len(new)} 个素材" + (f"：{'、'.join(new)}" if new else ""))
     if new:
         log("新素材不会自动放进时间线：在网页编辑器的“素材库”里点“加入”，或手动编辑 project.json")
 
 
+def cmd_auto(ws: Workspace, args) -> None:
+    """一条命令：素材目录 → 分析、转录、翻译、AI 初剪 → 预览视频（可选同时出 1080p 成片）。"""
+    ws.root.mkdir(parents=True, exist_ok=True)
+    st = load_settings(ws, args.name)
+    lang = st["speech"]["language"]
+    args.language = None if lang in (None, "", "auto") else lang
+    args.model = args.model or st["speech"]["whisper_model"]
+    args.force = False
+    if args.folder or ws.media_file.exists():
+        before = scan_sources(ws, args, args.folder)
+    else:
+        sys.exit("请指定素材目录：vidcut.py auto <目录>")
+    analysis_steps(ws, args)
+    new = [m["name"] for mid, m in ws.media().items() if mid not in before]
+
+    log("\n▶ roughcut")
+    if not ws.project_file.exists() or args.rebuild:
+        args.force, args.group_km, args.titles, args.captions = True, None, None, None
+        cmd_roughcut(ws, args)
+        args.force = False
+    else:
+        log(f"保留已有的 {ws.project_file}（可能有手动修改；加 --rebuild 按 settings.json 重新生成）")
+        sync_project_subtitles(ws)
+        if new:
+            log(f"新素材 {'、'.join(new)} 没有加入时间线：用 --rebuild 重新生成，或在网页编辑器里加入")
+
+    log("\n▶ render 预览")
+    args.draft = True
+    cmd_render(ws, args)
+    if args.final:
+        log("\n▶ render 成片")
+        args.draft = False
+        cmd_render(ws, args)
+    stem = re.sub(r"[^\w\-]+", "_", st["name"]).strip("_") or "output"
+    log("\n全部完成：")
+    log(f"  预览视频  {ws.out / (stem + '_preview.mp4')}")
+    if args.final:
+        log(f"  成片      {ws.out / (stem + '.mp4')}")
+    log(f"  剪辑项目  {ws.project_file}   ← 改顺序、裁剪、音量、字幕、转场，再运行 render")
+    log(f"  自动设置  {ws.root / 'settings.json'}   ← 改参数后运行 auto --rebuild")
+    log(f"  语音文字稿 {ws.root / 'transcript.md'}")
+
+
 def cmd_all(ws: Workspace, args) -> None:
-    for step in (cmd_scan, cmd_proxy, cmd_analyze, cmd_transcribe, cmd_summarize, cmd_roughcut):
+    for step in (cmd_scan, cmd_proxy, cmd_analyze, cmd_transcribe, cmd_translate, cmd_summarize, cmd_roughcut):
         log(f"\n▶ {step.__name__.removeprefix('cmd_')}")
         step(ws, args)
 
@@ -1106,31 +1687,38 @@ def main() -> None:
     p.add_argument("--language", default="auto", help="语言代码（zh、en…），默认 auto 自动检测")
     p.add_argument("--model", help="Whisper 模型名或 HF 仓库")
     add("transcript", cmd_transcript, "把所有语音整理成文字稿 transcript.md")
+    p = add("translate", cmd_translate, "翻译语音（中文↔英文）")
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--offline", action="store_true", help="不调用 Claude，只用离线翻译")
     p = add("summarize", cmd_summarize, "AI 摘要与初剪建议")
     p.add_argument("--force", action="store_true")
     p.add_argument("--offline", action="store_true", help="不调用 Claude，只用规则")
-    p = add("roughcut", cmd_roughcut, "生成 project.json")
+
+    def roughcut_args(p):
+        p.add_argument("--name", help="片名（会写进 settings.json）")
+        p.add_argument("--group-km", type=float, help="同组地点半径（公里），只对这一次生效")
+        p.add_argument("--no-titles", dest="titles", action="store_false", default=None, help="这一次不加标题卡")
+        p.add_argument("--captions", action="store_true", default=None, help="这一次把 AI 标题叠加到每段开头")
+
+    p = add("roughcut", cmd_roughcut, "按 settings.json 生成 project.json")
     p.add_argument("--force", action="store_true")
-    p.add_argument("--name", default="My Trip")
-    p.add_argument("--gap-ms", type=int, default=1000)
-    p.add_argument("--fade-ms", type=int, default=400)
-    p.add_argument("--group-km", type=float, default=30, help="同组地点半径（公里）")
-    p.add_argument("--no-titles", dest="titles", action="store_false", help="不自动生成片头和分组标题卡")
-    p.add_argument("--captions", action="store_true", help="把 AI 标题作为文字叠加到每段开头")
+    roughcut_args(p)
     p = add("render", cmd_render, "渲染成片")
-    p.add_argument("--draft", action="store_true", help="用代理文件快速出 640x360 草稿")
+    p.add_argument("--draft", action="store_true", help="用代理文件快速出预览视频（preview_resolution）")
+    p = add("auto", cmd_auto, "全自动：素材目录 → 预览视频")
+    p.add_argument("folder", nargs="?", help="素材目录；不填则重新扫描以前扫过的目录")
+    p.add_argument("--name", help="片名（会写进 settings.json）")
+    p.add_argument("--model", help="Whisper 模型")
+    p.add_argument("--offline", action="store_true", help="不调用 Claude（摘要和翻译都用离线方式）")
+    p.add_argument("--rebuild", action="store_true", help="按 settings.json 重新生成 project.json（会覆盖手动修改）")
+    p.add_argument("--final", action="store_true", help="同时渲染 1080p 成片")
     p = add("all", cmd_all, "scan → roughcut 一条龙")
     p.add_argument("folder")
     p.add_argument("--force", action="store_true")
     p.add_argument("--language", default="auto", help="语言代码（zh、en…），默认 auto 自动检测")
     p.add_argument("--model")
     p.add_argument("--offline", action="store_true")
-    p.add_argument("--name", default="My Trip")
-    p.add_argument("--gap-ms", type=int, default=1000)
-    p.add_argument("--fade-ms", type=int, default=400)
-    p.add_argument("--group-km", type=float, default=30, help="同组地点半径（公里）")
-    p.add_argument("--no-titles", dest="titles", action="store_false", help="不自动生成片头和分组标题卡")
-    p.add_argument("--captions", action="store_true", help="把 AI 标题作为文字叠加到每段开头")
+    roughcut_args(p)
     p = add("update", cmd_update, "加入新素材（不改 project.json）")
     p.add_argument("folder", nargs="?", help="新的素材目录；不填则重新扫描以前扫过的目录")
     p.add_argument("--language", default="auto", help="语言代码（zh、en…），默认 auto 自动检测")

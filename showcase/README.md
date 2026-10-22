@@ -12,7 +12,58 @@
 - 标题文字用 Pillow 绘制（`uv` 会自动安装），需要系统里有中文字体：macOS 自带苹方；
   Linux 装 Noto Sans CJK；也可以用环境变量 `VIDCUT_FONT` 指定字体文件
 
-## 快速开始
+## Windows / Linux：用 Docker
+
+不想在本机装 Python、ffmpeg、uv，或者在 Windows 上运行，见 [DOCKER.md](DOCKER.md)：
+
+```bash
+docker build -t vidcut .
+docker run --rm -v <素材目录>:/videos:ro -v <工作目录>:/work -v vidcut-cache:/cache vidcut auto /videos --name "日本之旅"
+```
+
+## 用 make
+
+`make`（或 `make help`）列出所有命令。常用：
+
+```bash
+make auto SRC=~/Movies/日本 NAME="日本之旅" WORK=work_japan   # 一条命令出预览视频
+make web WORK=work_japan                                     # 网页编辑器 http://127.0.0.1:8766
+make preview WORK=work_japan                                 # 改完 project.json 重出预览
+make final WORK=work_japan                                   # 同时出 1080p 成片
+make status WORK=work_japan                                  # 看各步骤进度
+```
+
+分步运行：`make scan SRC=…` → `proxy` → `analyze` → `transcribe` → `translate` → `summarize` → `roughcut` → `preview` / `render`。
+变量 `WORK`（工作目录，默认 work）、`SRC`、`NAME`、`PORT`（默认 8766）、`MODEL`（Whisper 模型）都可以覆盖。
+
+## 全自动：一条命令出预览视频
+
+```bash
+uv run vidcut.py auto ~/Movies/某次旅行 --name "日本之旅"
+```
+
+自动完成：扫描 → 代理 → 分析 → 语音转录（自动识别中文/英文）→ 翻译（中文↔英文）→ AI 摘要与初剪
+→ 渲染预览视频 `work/out/日本之旅_preview.mp4`（加 `--final` 同时出 1080p 成片）。
+
+- **长视频**只保留开头 5 秒和结尾 5 秒，中间用转场衔接
+- 片段之间是**平滑转场**（淡化；换天/换地点时经过黑场）
+- **自动音量**：逐段测响度，有人说话的调到 -16 LUFS，环境声调到 -23 LUFS，整片再统一标准化
+- **双语字幕**：原文 + 译文烧进画面，同时输出 `.srt`
+- 片头标题卡、“第 N 天 · 地点”标题卡
+
+生成两个 JSON 方便修改：
+
+| 文件 | 改什么 | 改完运行 |
+|---|---|---|
+| `work/settings.json` | 自动化参数：长视频阈值和保留秒数、转场类型和时长、音量目标、字幕显示方式、是否翻译、标题卡等（文件里 `_说明` 有每项解释） | `vidcut.py auto --rebuild`（重新生成剪辑，覆盖手动修改） |
+| `work/project.json` | 具体剪辑：顺序、入出点、音量、转场、标题、每句字幕的原文和译文 | `vidcut.py render --draft`（只重渲改过的段落） |
+
+再次运行 `vidcut.py auto`（不带目录）会重新扫描原目录、处理新增素材，并保留已有的 `project.json`。
+
+翻译优先用 Claude；Claude 不可用时自动安装并使用离线的 Argos Translate（第一次要下载模型，约 100MB）。
+语音识别和离线翻译需要的库都会通过 `uv` 自动临时安装，不需要手动 `--with`。
+
+## 快速开始（分步）
 
 ```bash
 ./make_samples.sh samples                 # 生成 6 段模拟旅行视频（含中文语音）
@@ -44,10 +95,12 @@ uv run --with mlx-whisper vidcut.py transcribe --model models/whisper-small-mlx
 | `proxy` | 720p、30fps、SDR、带音轨的代理文件 + 缩略图 | `work/derived/<id>/proxy.mp4` |
 | `analyze` | 静音、黑屏、场景切换、模糊检测，按场景抽关键帧 | `analysis.json`、`kf_*.jpg` |
 | `transcribe` | Whisper 转录，自动识别中文/英文（中英夹杂也行）；丢弃落在静音里的“幻觉”句子 | `transcript.json`、`work/transcript.md` |
-| `transcript` | 把所有视频的语音按拍摄时间整理成文字稿 | `work/transcript.md` |
+| `transcript` | 把所有视频的语音按拍摄时间整理成文字稿（含译文） | `work/transcript.md` |
+| `translate` | 中文语音译成英文、英文译成中文；Claude 优先，否则离线 Argos Translate | `transcript.json` 里的 `translation` |
 | `summarize` | Claude 看关键帧 + 转录 + 检测结果 → 标题、摘要、地点、保留/丢弃、入出点、理由 | `summary.json` |
-| `roughcut` | 按拍摄时间排序，按“同一天 + 30 公里内”分组；自动加片头标题卡和“第 N 天 · 地点”标题卡 | `work/project.json`、`work/roughcut.md` |
-| `render` | 每段单独渲染并缓存 → 拼接 → 两遍 loudnorm（-16 LUFS）；标题卡和画面文字；转录映射成字幕 | `work/out/*.mp4`、`*.srt` |
+| `roughcut` | 按 `settings.json` 生成剪辑：时间排序、分组、标题卡、长视频取头尾、转场、自动音量、字幕 | `work/project.json`、`work/roughcut.md` |
+| `render` | 每段单独渲染并缓存 → 转场拼接 → 两遍 loudnorm；标题卡、画面文字、双语字幕；`--draft` 出预览视频 | `work/out/*.mp4`、`*.srt` |
+| `auto [目录]` | 以上全部，最后出预览视频；`--final` 同时出成片，`--rebuild` 按 settings.json 重新生成剪辑 | 同上 |
 | `update [目录]` | 加入新素材：重新扫描已知目录（或新目录），只处理新增视频，**不改** `project.json` | 同上 |
 
 每一步都会跳过已经做完的部分，加 `--force` 重做。`all` 等于依次跑 scan → roughcut。
@@ -63,6 +116,9 @@ uv run --with mlx-whisper vidcut.py transcribe --model models/whisper-small-mlx
 - 改裁剪：改 `in_ms` / `out_ms`（毫秒，相对原视频）
 - 调音量：`volume_db`
 - 改间隔：增删 `{"type": "gap", "duration_ms": 1000}`
+- 转场：任意一项加 `"transition": {"type": "fade", "duration_ms": 600}`，表示从上一项过渡到这一项（`cut` 或删掉表示直接切）
+- 字幕：clip 里的 `"subtitles": [{"start_ms": 3600, "end_ms": 8600, "text": "原文", "translation": "译文"}]`，
+  时间是原视频里的毫秒；`project.subtitles` 控制 `burn_in`（是否烧进画面）和 `show`（both / original / translation）
 - 标题卡：`{"type": "title", "text": "第 1 天 · 东京", "subtitle": "", "duration_ms": 2000, "background": "blur_next"}`
   （`background` 为 `blur_next` 时用下一段画面模糊做背景，`black` 为黑底）
 - 画面文字：在 clip 里加 `"caption": {"text": "浅草寺", "position": "bottom", "start_ms": 0, "end_ms": 3000}`

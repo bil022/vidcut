@@ -21,6 +21,8 @@
 declare(strict_types=1);
 
 const SCHEMA_VERSION = 2;
+const TRANSITIONS = ['cut', 'fade', 'fadeblack', 'fadewhite', 'dissolve', 'wipeleft', 'wiperight', 'slideleft',
+                     'slideright', 'smoothleft', 'smoothright', 'circleopen', 'circleclose', 'radial', 'zoomin', 'distance'];
 const CONTENT_TYPES = ['mp4' => 'video/mp4', 'jpg' => 'image/jpeg', 'srt' => 'text/plain; charset=utf-8'];
 
 $HERE = __DIR__;
@@ -153,6 +155,13 @@ function validate($p): array
     if (!is_string($cfg['name'] ?? null) || trim($cfg['name']) === '') {
         $errs[] = '项目名不能为空';
     }
+    if (array_key_exists('subtitles', $cfg) && $cfg['subtitles'] !== null) {
+        $sc = $cfg['subtitles'];
+        if (!(is_array($sc) && is_bool($sc['burn_in'] ?? false)
+            && in_array($sc['show'] ?? 'both', ['both', 'original', 'translation'], true))) {
+            $errs[] = 'subtitles 设置无效：burn_in 为 true/false，show 为 both / original / translation';
+        }
+    }
     $tracks = $p['tracks'] ?? null;
     if (!(is_array($tracks) && $tracks && ($tracks[0]['kind'] ?? null) === 'video')) {
         return array_merge($errs, ['第一条轨道必须是 video']);
@@ -165,6 +174,13 @@ function validate($p): array
             $errs[] = "$tag: id 重复";
         }
         $seen[(string)$id] = true;
+        if (array_key_exists('transition', $it) && $it['transition'] !== null) {
+            $tr = $it['transition'];
+            $td = is_array($tr) ? ($tr['duration_ms'] ?? 600) : null;
+            if (!(is_array($tr) && in_array($tr['type'] ?? null, TRANSITIONS, true) && is_int($td) && $td >= 100 && $td <= 3000)) {
+                $errs[] = "$tag: 转场无效（类型见 settings.json 说明，时长 0.1–3 秒）";
+            }
+        }
         $type = $it['type'] ?? null;
         if ($type === 'clip') {
             $m = $media[$it['media_id'] ?? ''] ?? null;
@@ -189,6 +205,17 @@ function validate($p): array
             $fo = $it['fade_out_ms'] ?? 0;
             if (!(is_int($fi) && is_int($fo) && $fi >= 0 && $fo >= 0 && $fi + $fo <= $b - $a)) {
                 $errs[] = "$tag: 淡入淡出必须是非负整数，且总和不超过片段长度";
+            }
+            if (array_key_exists('subtitles', $it) && $it['subtitles'] !== null) {
+                $ok = is_array($it['subtitles']) && array_is_list($it['subtitles']);
+                foreach ($ok ? $it['subtitles'] : [] as $x) {
+                    $ok = $ok && is_array($x) && is_int($x['start_ms'] ?? null) && is_int($x['end_ms'] ?? null)
+                        && $x['start_ms'] < $x['end_ms'] && is_string($x['text'] ?? '') && mb_strlen($x['text'] ?? '') <= 200
+                        && is_string($x['translation'] ?? '') && mb_strlen($x['translation'] ?? '') <= 300;
+                }
+                if (!$ok) {
+                    $errs[] = "$tag: 字幕格式无效（每句需要 start_ms < end_ms，原文最多 200 字，译文最多 300 字）";
+                }
             }
             if (array_key_exists('caption', $it) && $it['caption'] !== null) {
                 $cap = $it['caption'];

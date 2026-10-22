@@ -1,0 +1,9 @@
+samples/
+models/
+work*/
+.env
+*.md
+index.php
+.htaccess
+__pycache__/
+.DS_Store

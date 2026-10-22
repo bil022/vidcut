@@ -34,6 +34,8 @@ from urllib.parse import unquote, urlparse
 HERE = Path(__file__).resolve().parent
 INDEX = HERE / "web" / "index.html"
 SCHEMA_VERSION = 2
+TRANSITIONS = {"cut", "fade", "fadeblack", "fadewhite", "dissolve", "wipeleft", "wiperight", "slideleft",
+               "slideright", "smoothleft", "smoothright", "circleopen", "circleclose", "radial", "zoomin", "distance"}
 CONTENT_TYPES = {".mp4": "video/mp4", ".jpg": "image/jpeg", ".srt": "text/plain; charset=utf-8"}
 
 
@@ -84,6 +86,10 @@ class Editor:
             errs.append("portrait_mode 只能是 blur_fill 或 pad")
         if not isinstance(cfg.get("name"), str) or not cfg["name"].strip():
             errs.append("项目名不能为空")
+        sub_cfg = cfg.get("subtitles")
+        if sub_cfg is not None and not (isinstance(sub_cfg, dict) and isinstance(sub_cfg.get("burn_in", False), bool)
+                                        and sub_cfg.get("show", "both") in ("both", "original", "translation")):
+            errs.append("subtitles 设置无效：burn_in 为 true/false，show 为 both / original / translation")
         tracks = p.get("tracks")
         if not (isinstance(tracks, list) and tracks and tracks[0].get("kind") == "video"):
             return errs + ["第一条轨道必须是 video"]
@@ -93,6 +99,10 @@ class Editor:
             if it.get("id") in seen:
                 errs.append(f"{tag}: id 重复")
             seen.add(it.get("id"))
+            tr = it.get("transition")
+            if tr is not None and not (isinstance(tr, dict) and tr.get("type") in TRANSITIONS
+                                       and isinstance(tr.get("duration_ms", 600), int) and 100 <= tr.get("duration_ms", 600) <= 3000):
+                errs.append(f"{tag}: 转场无效（类型见 settings.json 说明，时长 0.1–3 秒）")
             if it.get("type") == "clip":
                 m = media.get(it.get("media_id"))
                 if m is None:
@@ -110,6 +120,14 @@ class Editor:
                 fi, fo = it.get("fade_in_ms", 0), it.get("fade_out_ms", 0)
                 if not (isinstance(fi, int) and isinstance(fo, int) and fi >= 0 and fo >= 0 and fi + fo <= b - a):
                     errs.append(f"{tag}: 淡入淡出必须是非负整数，且总和不超过片段长度")
+                subs = it.get("subtitles")
+                if subs is not None:
+                    ok = isinstance(subs, list) and all(
+                        isinstance(x, dict) and isinstance(x.get("start_ms"), int) and isinstance(x.get("end_ms"), int)
+                        and x["start_ms"] < x["end_ms"] and isinstance(x.get("text", ""), str) and len(x.get("text", "")) <= 200
+                        and isinstance(x.get("translation", ""), str) and len(x.get("translation", "")) <= 300 for x in subs)
+                    if not ok:
+                        errs.append(f"{tag}: 字幕格式无效（每句需要 start_ms < end_ms，原文最多 200 字，译文最多 300 字）")
                 cap = it.get("caption")
                 if cap is not None:
                     if not (isinstance(cap, dict) and isinstance(cap.get("text"), str) and len(cap["text"]) <= 60):

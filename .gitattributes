@@ -1,0 +1,4 @@
+# Windows 上 git 可能把换行改成 CRLF，shell 脚本和 Makefile 在容器里会因此无法运行
+*.sh      text eol=lf
+Makefile  text eol=lf
+Dockerfile text eol=lf
