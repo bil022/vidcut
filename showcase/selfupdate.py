@@ -8,7 +8,7 @@ docker-entrypoint.sh 发现 current 存在就改用那里的脚本运行。
   - 网络不通、GitHub 访问失败
   - 新版本的 Python 脚本有语法错误
   - 新版本改了依赖（Dockerfile 里安装软件的部分变了）：这时需要重新构建镜像（update.ps1 / update.sh）
-  - 本地开发构建的镜像（VIDCUT_REV=dev）且没有加 --force
+本地改代码调试时，用 VIDCUT_UPDATE=0 关掉自动更新，否则会被 GitHub 上的版本替换。
 
 用法：python selfupdate.py [--force]
 环境变量：VIDCUT_REPO（默认 bil022/vidcut）、VIDCUT_BRANCH（默认 main）、VIDCUT_CODE_DIR（默认 /cache/app）
@@ -61,9 +61,6 @@ def current_rev() -> str:
 
 def main() -> int:
     force = "--force" in sys.argv
-    if os.environ.get("VIDCUT_REV", "dev") == "dev" and not (ROOT / "current").exists() and not force:
-        say("本地开发构建的镜像，不自动更新（加 --force 可强制）")
-        return 0
     try:
         latest = json.loads(fetch(f"https://api.github.com/repos/{REPO}/commits/{BRANCH}"))["sha"]
     except Exception as e:  # noqa: BLE001 —— 没网时照常用当前版本

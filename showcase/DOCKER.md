@@ -129,7 +129,7 @@ docker compose up web
 - 没有网络时照常用当前版本启动
 - 新脚本有语法错误时不会切换
 - 想立即更新而不重启：`docker run --rm -v vidcut-cache:/cache vidcut update-scripts`
-- 关闭自动更新：加环境变量 `VIDCUT_UPDATE=0`（会使用镜像里自带的脚本）
+- 关闭自动更新：加环境变量 `VIDCUT_UPDATE=0`（会使用镜像里自带的脚本；自己改代码调试时要关掉，否则会被 GitHub 上的版本替换）
 - 请把 `/cache` 挂载成卷（如 `vidcut-cache`），更新下来的脚本会保留，下次启动不用再下载
 
 **只有依赖变了才需要重新构建镜像**（例如新版本要装新的 Python 包或改了 ffmpeg）。这时启动日志会提示
